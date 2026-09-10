@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="Тазарт">
+  <clipPath id="tzm"><rect width="120" height="120" rx="27"/></clipPath>
+  <g clip-path="url(#tzm)">
+    <rect width="120" height="120" fill="#141C23"/>
+    <path d="M0 83L120 19V0H0Z" fill="#27333E"/>
+    <path d="M0 83L120 19V37L0 101Z" fill="#E3A21C"/>
+    <path d="M0 113L120 49V54L0 118Z" fill="#E3A21C" opacity=".45"/>
+  </g>
+</svg>

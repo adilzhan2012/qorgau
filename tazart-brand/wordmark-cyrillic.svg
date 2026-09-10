@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 586 120" width="586" height="120" role="img" aria-label="ТАЗАРТ">
+  <g fill="#141C23" fill-rule="evenodd">
+    <path d="M0 0H78V22H50V120H28V22H0Z"/>
+    <path transform="translate(94,0)" d="M0 120L30 0H62L92 120H70L61.5 86H30.5L22 120Z M46 24L56 64H36Z"/>
+    <path transform="translate(202,0)" d="M0 0H78V120H0V98H56V71H30V49H56V22H0Z"/>
+    <path transform="translate(296,0)" d="M0 120L30 0H62L92 120H70L61.5 86H30.5L22 120Z M46 24L56 64H36Z"/>
+    <path transform="translate(404,0)" d="M0 0H88V64H22V120H0Z M22 22H66V42H22Z"/>
+    <path transform="translate(508,0)" d="M0 0H78V22H50V120H28V22H0Z"/>
+  </g>
+</svg>

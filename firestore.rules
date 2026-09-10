@@ -1,0 +1,18 @@
+rules_version = '2';
+
+// Target state: the map is public and read-only. Traps report through a
+// backend with admin credentials, so browsers never need write access.
+//
+// Seeding needs writes, though — see README. Publish the temporary ruleset
+// first, run `npm run seed`, then publish this one.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /devices/{deviceId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

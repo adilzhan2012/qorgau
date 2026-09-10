@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 556 120" width="556" height="120" fill="currentColor" role="img" aria-label="Тазарт">
+  <clipPath id="tzmo"><rect width="120" height="120" rx="27"/></clipPath>
+  <g clip-path="url(#tzmo)">
+    <path d="M0 0H120V19L0 83Z"/>
+    <path d="M0 101L120 37V49L0 113Z"/>
+    <path d="M0 118L120 54V120H0Z"/>
+  </g>
+  <g transform="translate(160,22) scale(0.63333)" fill-rule="evenodd">
+    <path d="M0 0H78V22H50V120H28V22H0Z"/>
+    <path transform="translate(94,0)" d="M0 120L30 0H62L92 120H70L61.5 86H30.5L22 120Z M46 24L56 64H36Z"/>
+    <path transform="translate(202,0)" d="M0 0H78V22L28 98H78V120H0V98L50 22H0Z"/>
+    <path d="M316 0H330L306 120H292Z"/>
+    <path transform="translate(336,0)" d="M0 120L30 0H62L92 120H70L61.5 86H30.5L22 120Z M46 24L56 64H36Z"/>
+    <path transform="translate(444,0)" d="M0 0H88V64H50L88 120H58L22 66V120H0Z M22 22H66V42H22Z"/>
+    <path transform="translate(548,0)" d="M0 0H78V22H50V120H28V22H0Z"/>
+  </g>
+</svg>
