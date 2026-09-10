@@ -27,10 +27,15 @@ function run(command, args, options = {}) {
   return execFileSync(command, args, {
     stdio: options.quiet ? "pipe" : "inherit",
     encoding: "utf8",
-    shell: process.platform === "win32",
+    // Shell only where it is genuinely needed (npm is a .cmd on Windows).
+    // Turning it on for git as well makes Windows re-parse the arguments, and
+    // a commit message with spaces arrives as several broken pathspecs.
+    shell: false,
     ...options,
   });
 }
+
+const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 
 const remote = run("git", ["remote", "get-url", "origin"], { quiet: true }).trim();
 if (!remote) {
@@ -40,8 +45,11 @@ if (!remote) {
 
 console.log("1/3  Собираю сайт...");
 rmSync(OUT, { recursive: true, force: true });
-run("npm", ["run", "build"], {
+run(npm, ["run", "build"], {
   cwd: ROOT,
+  // npm is a .cmd on Windows and will not spawn without a shell; git is a real
+  // executable and must NOT have one, or Windows re-splits its arguments.
+  shell: process.platform === "win32",
   // Задаём здесь, а не в командной строке: Git Bash на Windows превращает
   // "/qorgau" в путь вида "C:/Program Files/Git/qorgau".
   env: { ...process.env, NEXT_PUBLIC_BASE_PATH: BASE_PATH },
