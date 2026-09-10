@@ -45,6 +45,20 @@ if (!remote) {
 
 console.log("1/3  Собираю сайт...");
 rmSync(OUT, { recursive: true, force: true });
+/**
+ * Next подставляет все NEXT_PUBLIC_* прямо в код на этапе сборки. Значит
+ * локальный .env.local, который мы аккуратно не коммитим, всё равно уехал бы
+ * в опубликованный бандл — ключи Firebase оказались бы на виду.
+ *
+ * Сайту они не нужны: без них берётся встроенный список устройств, а
+ * распознавание звука от Firestore не зависит вообще. Поэтому вырезаем их из
+ * окружения сборки.
+ */
+const buildEnv = { ...process.env, NEXT_PUBLIC_BASE_PATH: BASE_PATH };
+for (const name of Object.keys(buildEnv)) {
+  if (name.startsWith("NEXT_PUBLIC_FIREBASE_")) delete buildEnv[name];
+}
+
 run(npm, ["run", "build"], {
   cwd: ROOT,
   // npm is a .cmd on Windows and will not spawn without a shell; git is a real
@@ -52,7 +66,7 @@ run(npm, ["run", "build"], {
   shell: process.platform === "win32",
   // Задаём здесь, а не в командной строке: Git Bash на Windows превращает
   // "/qorgau" в путь вида "C:/Program Files/Git/qorgau".
-  env: { ...process.env, NEXT_PUBLIC_BASE_PATH: BASE_PATH },
+  env: buildEnv,
 });
 
 console.log("\n2/3  Готовлю ветку " + BRANCH + "...");
