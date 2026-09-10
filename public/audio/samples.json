@@ -1,0 +1,32 @@
+[
+  {
+    "file": "ambient-forest.wav",
+    "name": "ambient-forest",
+    "expected": "other",
+    "expectedLabel": "Другое"
+  },
+  {
+    "file": "chainsaw-demo.wav",
+    "name": "chainsaw-demo",
+    "expected": "chainsaw",
+    "expectedLabel": "Бензопила"
+  },
+  {
+    "file": "dog-demo.wav",
+    "name": "dog-demo",
+    "expected": "dog",
+    "expectedLabel": "Собака"
+  },
+  {
+    "file": "gunshot-demo.wav",
+    "name": "gunshot-demo",
+    "expected": "gunshot",
+    "expectedLabel": "Выстрел"
+  },
+  {
+    "file": "vehicle-demo.wav",
+    "name": "vehicle-demo",
+    "expected": "vehicle",
+    "expectedLabel": "Транспорт"
+  }
+]

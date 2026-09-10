@@ -1,9 +1,9 @@
 import { FeatureExtractor, type Features } from "./features";
-import type { ReadingSource } from "@/lib/live/store";
+import type { ReadingSource } from "@/lib/types";
 
 /**
  * Turns any Web Audio node into a sensor: pulls frames, extracts the same
- * features the ESP32 sends, and posts them to /api/ingest. The microphone and
+ * features the ESP32 sends, and hands them to `onFeatures`. The microphone and
  * the sample player both run through here, so all three sources are literally
  * the same pipeline.
  */
@@ -26,8 +26,8 @@ export interface SensorHandle {
 export interface SensorOptions {
   deviceId: string;
   source: ReadingSource;
-  /** Called with every frame, for local meters that should not wait on SSE. */
-  onFeatures?: (features: Features) => void;
+  /** Receives every frame. This is how readings reach the app. */
+  onFeatures: (features: Features) => void;
 }
 
 /**
@@ -69,23 +69,13 @@ export function runSensor(
   const extractor = new FeatureExtractor(SENSOR_RATE);
 
   let stopped = false;
-  let inFlight = false;
 
   const tick = () => {
     if (stopped) return;
     analyser.getFloatTimeDomainData(window);
     frame.set(window.subarray(window.length - FRAME_SAMPLES));
 
-    const features = extractor.extract(frame);
-    options.onFeatures?.(features);
-
-    // Drop a frame rather than queue up behind a slow request.
-    if (!inFlight) {
-      inFlight = true;
-      void postFeatures(options.deviceId, options.source, features).finally(() => {
-        inFlight = false;
-      });
-    }
+    options.onFeatures(extractor.extract(frame));
   };
 
   const timer = window_setInterval(tick, FRAME_MS);
@@ -107,20 +97,4 @@ export function runSensor(
 /** Named so the local `window` Float32Array above cannot shadow the global. */
 function window_setInterval(fn: () => void, ms: number): number {
   return globalThis.setInterval(fn, ms) as unknown as number;
-}
-
-export async function postFeatures(
-  deviceId: string,
-  source: ReadingSource,
-  features: Features,
-): Promise<void> {
-  try {
-    await fetch("/api/ingest", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: deviceId, source, ...features }),
-    });
-  } catch {
-    // The dev server restarting mid-demo must not kill the sensor loop.
-  }
 }

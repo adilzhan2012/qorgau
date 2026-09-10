@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "seed": "node scripts/seed.mjs",
     "audio": "node scripts/gen-audio.mjs",
-    "bridge": "powershell -ExecutionPolicy Bypass -File scripts/serial-bridge.ps1"
+    "bridge": "powershell -ExecutionPolicy Bypass -File scripts/serial-bridge.ps1",
+    "deploy": "node scripts/deploy.mjs"
   },
   "dependencies": {
     "firebase": "^11.10.0",

@@ -2,17 +2,21 @@
  * Synthesises the demo sound files into public/audio/.
  *
  * These are a safety net, not the goal: drop real recordings into the same
- * folder and /api/samples picks them up on its own. Existing files are never
+ * folder and they appear on the site too. Existing files are never
  * overwritten, so your own gunshot.wav always wins over the generated one.
  *
  *   node scripts/gen-audio.mjs
  *
- * The waveforms are the ones in src/app/api/selftest/route.ts, which the
- * classifier is verified against — so what these produce is what the site is
- * known to recognise.
+ * The waveforms are the ones the classifier is verified against on the
+ * /selftest page — so what these produce is what the site is known to
+ * recognise.
+ *
+ * It also writes public/audio/samples.json, the list the site reads to build
+ * its sample buttons. The site is published as static files, so there is no
+ * server left to scan the folder at request time — the scan happens here.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -139,9 +143,45 @@ for (const { file, seconds, synth } of SOUNDS) {
   console.log(`✓ ${file} — ${seconds} с`);
 }
 
+/**
+ * Keyword → class, checked against the filename. Dropping `gunshot-01.wav` or
+ * `лай собаки.mp3` into the folder is all it takes to add a sample.
+ */
+const HINTS = [
+  [/gun|shot|shoot|rifle|выстрел|ружь|стрель/i, "gunshot", "Выстрел"],
+  [/dog|bark|лай|собак|пёс|пес/i, "dog", "Собака"],
+  [/chain|saw|пила|бензо|пил/i, "chainsaw", "Бензопила"],
+  [/car|truck|engine|vehicle|мотор|машин|транспорт|двигат/i, "vehicle", "Транспорт"],
+  [/bird|animal|wolf|птиц|животн|волк|зверь/i, "animal", "Животное"],
+  [/ambient|forest|quiet|фон|лес|тишин/i, "other", "Другое"],
+];
+
+const AUDIO_EXTENSIONS = [".wav", ".mp3", ".ogg", ".m4a", ".flac", ".aac", ".webm"];
+
+const samples = readdirSync(OUT_DIR)
+  .filter((file) => AUDIO_EXTENSIONS.includes(path.extname(file).toLowerCase()))
+  .sort((a, b) => a.localeCompare(b, "ru"))
+  .map((file) => {
+    const hit = HINTS.find(([pattern]) => pattern.test(file));
+    return {
+      // Just the filename: the site adds the prefix itself, because on GitHub
+      // Pages everything lives under /qorgau/ rather than at the root.
+      file,
+      name: path.basename(file, path.extname(file)),
+      expected: hit ? hit[1] : null,
+      expectedLabel: hit ? hit[2] : null,
+    };
+  });
+
+writeFileSync(
+  path.join(OUT_DIR, "samples.json"),
+  JSON.stringify(samples, null, 2) + "\n",
+);
+
 console.log(
   written > 0
-    ? `\nГотово: ${written} файл(ов) в public/audio/`
-    : "\nВсе файлы уже на месте.",
+    ? `\nГотово: ${written} новых файл(ов) в public/audio/`
+    : "\nВсе звуки уже на месте.",
 );
-console.log("Свои записи кладите в ту же папку — сайт подхватит их сам.");
+console.log(`Список samples.json обновлён: ${samples.length} звук(ов).`);
+console.log("Свои записи кладите туда же и запускайте `npm run audio` заново.");

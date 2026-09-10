@@ -10,8 +10,7 @@ import {
 } from "firebase/firestore";
 import { db, isFirebaseConfigured } from "@/lib/firebase";
 import { FALLBACK_DEVICES } from "@/lib/fallbackDevices";
-import { useLiveStream } from "@/hooks/useLiveStream";
-import type { LiveReading } from "@/lib/live/store";
+import type { LiveReading } from "@/lib/live/readings";
 import {
   SOUND_CLASSES,
   type Classification,
@@ -83,10 +82,6 @@ export interface UseDevicesResult {
   firestoreEnabled: boolean;
   /** No first snapshot yet after STALL_AFTER_MS. See the note in the effect. */
   stalled: boolean;
-  /** The SSE sensor stream is attached. Independent of Firestore. */
-  liveConnected: boolean;
-  /** How many devices are currently reporting readings. */
-  liveCount: number;
 }
 
 /**
@@ -133,7 +128,7 @@ const STALL_AFTER_MS = 10_000;
  * Alerting devices sort first, then by name — so the list never reshuffles
  * arbitrarily between snapshots.
  */
-export function useDevices(): UseDevicesResult {
+export function useDevices(readings: Record<string, LiveReading>): UseDevicesResult {
   const [remote, setRemote] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -190,8 +185,6 @@ export function useDevices(): UseDevicesResult {
     };
   }, []);
 
-  const { readings, connected } = useLiveStream();
-
   // Fall back to the built-in roster until Firestore answers — and keep using
   // it if it never does, so the demo never stalls on a skeleton.
   const devices = useMemo(
@@ -208,7 +201,5 @@ export function useDevices(): UseDevicesResult {
     firestoreEnabled: isFirebaseConfigured,
     error,
     stalled,
-    liveConnected: connected,
-    liveCount: Object.keys(readings).length,
   };
 }

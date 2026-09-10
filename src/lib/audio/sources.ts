@@ -3,8 +3,8 @@ import { getSensorContext, runSensor, type SensorHandle } from "./sensor";
 
 /**
  * The two browser-side sound sources: the laptop microphone, and playback of a
- * file from public/audio. Both hand their audio to `runSensor`, so the server
- * cannot tell them apart from the ESP32 — same features, same endpoint.
+ * file from public/audio. Both hand their audio to `runSensor`, so nothing
+ * downstream can tell them apart from the ESP32 — same features, same path.
  */
 
 export interface SourceHandle extends SensorHandle {
@@ -19,7 +19,7 @@ export interface SourceHandle extends SensorHandle {
  */
 export async function startMicrophone(
   deviceId: string,
-  onFeatures?: (features: Features) => void,
+  onFeatures: (features: Features) => void,
 ): Promise<SourceHandle> {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
@@ -54,7 +54,7 @@ export async function startMicrophone(
 export async function playSample(
   url: string,
   deviceId: string,
-  onFeatures?: (features: Features) => void,
+  onFeatures: (features: Features) => void,
 ): Promise<SourceHandle> {
   const context = await getSensorContext();
 

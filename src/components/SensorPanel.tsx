@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { SampleFile } from "@/app/api/samples/route";
 import { connectSerial, isSerialSupported, type SerialHandle } from "@/lib/audio/serialSensor";
 import { playSample, startMicrophone, type SourceHandle } from "@/lib/audio/sources";
 import { bandLabel } from "@/lib/audio/features";
+import { withBasePath } from "@/lib/basePath";
+import type { PublishFeatures } from "@/hooks/useReadings";
 import {
   SOUND_CLASSES,
   SOUND_CLASS_LABELS,
@@ -16,24 +17,36 @@ import {
 
 type Mode = "idle" | "mic" | "serial";
 
+/** One entry of public/audio/samples.json, written by scripts/gen-audio.mjs. */
+interface SampleFile {
+  file: string;
+  name: string;
+  expected: string | null;
+  expectedLabel: string | null;
+}
+
 interface SensorPanelProps {
   devices: Device[];
   sensorDeviceId: string;
   onSensorDeviceChange: (id: string) => void;
   /** The device the sensor reports as, carrying its live readings. */
   target: Device | null;
+  /** Where every frame of features goes. */
+  publish: PublishFeatures;
 }
 
 /**
  * The control surface for the demo: pick a trap, feed it sound, watch the site
- * decide. The microphone, the ESP32 over USB and the sample files all post the
- * same features to /api/ingest, so this panel is only choosing which one runs.
+ * decide. The microphone, the ESP32 over USB and the sample files all produce
+ * the same features and go through the same `publish`, so this panel is only
+ * choosing which one runs.
  */
 export function SensorPanel({
   devices,
   sensorDeviceId,
   onSensorDeviceChange,
   target,
+  publish,
 }: SensorPanelProps) {
   const [mode, setMode] = useState<Mode>("idle");
   const [open, setOpen] = useState(true);
@@ -52,10 +65,10 @@ export function SensorPanel({
 
   useEffect(() => {
     let cancelled = false;
-    void fetch("/api/samples")
-      .then((response) => response.json() as Promise<{ samples: SampleFile[] }>)
+    void fetch(withBasePath("/audio/samples.json"))
+      .then((response) => response.json() as Promise<SampleFile[]>)
       .then((data) => {
-        if (!cancelled) setSamples(data.samples ?? []);
+        if (!cancelled) setSamples(Array.isArray(data) ? data : []);
       })
       .catch(() => {
         if (!cancelled) setSamples([]);
@@ -91,7 +104,9 @@ export function SensorPanel({
     }
     stopAll();
     try {
-      audioRef.current = await startMicrophone(sensorDeviceId);
+      audioRef.current = await startMicrophone(sensorDeviceId, (features) =>
+        publish(sensorDeviceId, "mic", features),
+      );
       setMode("mic");
     } catch (err) {
       setError(
@@ -100,7 +115,7 @@ export function SensorPanel({
           : `Микрофон не открылся: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-  }, [mode, sensorDeviceId, stopAll]);
+  }, [mode, sensorDeviceId, stopAll, publish]);
 
   const toggleSerial = useCallback(async () => {
     setError(null);
@@ -112,6 +127,7 @@ export function SensorPanel({
     try {
       serialRef.current = await connectSerial({
         fallbackDeviceId: sensorDeviceId,
+        onFeatures: (deviceId, features) => publish(deviceId, "esp32", features),
         onError: (message) => setError(`Обрыв связи с платой: ${message}`),
         onClose: () => setMode((current) => (current === "serial" ? "idle" : current)),
       });
@@ -124,25 +140,29 @@ export function SensorPanel({
           : `Не удалось открыть порт: ${message}`,
       );
     }
-  }, [mode, sensorDeviceId, stopAll]);
+  }, [mode, sensorDeviceId, stopAll, publish]);
 
   const playFile = useCallback(
     async (sample: SampleFile) => {
       setError(null);
       sampleRef.current?.stop();
-      setPlaying(sample.url);
+      setPlaying(sample.file);
       try {
-        const handle = await playSample(sample.url, sensorDeviceId);
+        const handle = await playSample(
+          withBasePath(`/audio/${encodeURIComponent(sample.file)}`),
+          sensorDeviceId,
+          (features) => publish(sensorDeviceId, "sample", features),
+        );
         sampleRef.current = handle;
         await handle.done;
       } catch (err) {
         setError(`Не удалось проиграть файл: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
         sampleRef.current = null;
-        setPlaying((current) => (current === sample.url ? null : current));
+        setPlaying((current) => (current === sample.file ? null : current));
       }
     },
-    [sensorDeviceId],
+    [sensorDeviceId, publish],
   );
 
   const live = target?.live ?? null;
@@ -322,12 +342,12 @@ export function SensorPanel({
               <div className="flex flex-wrap gap-1.5">
                 {samples.map((sample) => (
                   <button
-                    key={sample.url}
+                    key={sample.file}
                     type="button"
                     onClick={() => void playFile(sample)}
                     disabled={playing !== null}
                     className={`rounded-full px-3 py-1.5 text-[12px] font-medium transition-all duration-300 ease-apple active:scale-95 disabled:opacity-40 ${
-                      playing === sample.url
+                      playing === sample.file
                         ? "bg-accent text-canvas"
                         : "bg-raised text-ink hover:bg-raised/70"
                     }`}

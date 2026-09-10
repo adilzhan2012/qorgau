@@ -1,3 +1,5 @@
+import { parseFeatures, type Features } from "./features";
+
 /**
  * Reads the ESP32 over USB straight from the page, using Web Serial.
  *
@@ -5,8 +7,6 @@
  * needs a native build, and on Node 24 + Windows that can mean installing
  * Visual Studio build tools. Web Serial ships inside Chrome and Edge, needs no
  * install at all, and removes a whole process from the demo.
- *
- * scripts/serial-bridge.ps1 covers the case where the browser will not do it.
  */
 
 /** Minimal Web Serial typings — not in TypeScript's DOM lib yet. */
@@ -37,14 +37,15 @@ export interface SerialOptions {
   /** Used when a packet does not name a device itself. */
   fallbackDeviceId: string;
   baudRate?: number;
-  onPacket?: (packet: Record<string, unknown>) => void;
+  /** Receives the features from every valid packet the board prints. */
+  onFeatures: (deviceId: string, features: Features) => void;
   onError?: (message: string) => void;
   onClose?: () => void;
 }
 
 /**
- * Prompts for a port, then forwards every JSON line the board prints to
- * /api/ingest. Must be called from a click — the picker needs a user gesture.
+ * Prompts for a port, then decodes every JSON line the board prints.
+ * Must be called from a click — the picker needs a user gesture.
  */
 export async function connectSerial(options: SerialOptions): Promise<SerialHandle> {
   const api = serial();
@@ -111,16 +112,13 @@ function handleLine(line: string, options: SerialOptions): void {
   } catch {
     return;
   }
-  if (!Array.isArray(packet.bands ?? packet.b)) return;
 
-  options.onPacket?.(packet);
+  // The board also prints its microphone self-test and boot messages; anything
+  // without a usable feature vector is skipped rather than treated as an error.
+  const features = parseFeatures(packet);
+  if (!features) return;
 
-  const id = typeof packet.id === "string" && packet.id.trim() ? packet.id : options.fallbackDeviceId;
-  void fetch("/api/ingest", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...packet, id, source: "esp32" }),
-  }).catch(() => {
-    // Keep reading the port even if the server hiccups.
-  });
+  const id =
+    typeof packet.id === "string" && packet.id.trim() ? packet.id : options.fallbackDeviceId;
+  options.onFeatures(id, features);
 }

@@ -11,6 +11,7 @@ import { SensorPanel } from "@/components/SensorPanel";
 import { StatsBar } from "@/components/StatsBar";
 import { useDevices } from "@/hooks/useDevices";
 import { useNow } from "@/hooks/useNow";
+import { useReadings } from "@/hooks/useReadings";
 import { DEFAULT_SENSOR_DEVICE } from "@/lib/fallbackDevices";
 import type { Device, DeviceFilter } from "@/lib/types";
 
@@ -25,7 +26,11 @@ function MapNotice({ title, children }: { title: string; children: React.ReactNo
 }
 
 export function MonitorView() {
-  const { devices, loading, error, stalled, liveConnected } = useDevices();
+  // Readings live here, in the page, rather than on a server: the site is
+  // published as static files so it can be opened from a URL with nothing
+  // installed.
+  const { readings, publish } = useReadings();
+  const { devices, loading, error, stalled } = useDevices(readings);
   const now = useNow();
   const mapRef = useRef<MapRef | null>(null);
 
@@ -43,13 +48,9 @@ export function MonitorView() {
     [devices],
   );
 
-  // The sensor stream is the connection that matters here: it carries the live
-  // readings and works whether or not Firestore is reachable.
-  const connection: ConnectionState = liveConnected
-    ? "live"
-    : error
-      ? "offline"
-      : "connecting";
+  // Everything needed to classify sound runs in this page, so the app is ready
+  // the moment it renders. Firestore only ever supplied the roster.
+  const connection: ConnectionState = "live";
 
   const visible = useMemo(
     () => (filter === "all" ? devices : devices.filter((device) => device.status === filter)),
@@ -137,6 +138,7 @@ export function MonitorView() {
             sensorDeviceId={sensorDeviceId}
             onSensorDeviceChange={setSensorDeviceId}
             target={sensorTarget}
+            publish={publish}
           />
 
           {/* Firestore only supplies the roster, and a local one stands in for
