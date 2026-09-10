@@ -51,13 +51,25 @@ rmSync(OUT, { recursive: true, force: true });
  * в опубликованный бандл — ключи Firebase оказались бы на виду.
  *
  * Сайту они не нужны: без них берётся встроенный список устройств, а
- * распознавание звука от Firestore не зависит вообще. Поэтому вырезаем их из
- * окружения сборки.
+ * распознавание звука от Firestore не зависит вообще.
+ *
+ * Просто удалить их из окружения мало — Next читает .env.local сам, с диска.
+ * Но его загрузчик не перезаписывает уже заданные переменные, поэтому мы
+ * объявляем их пустыми: файл прочитается, а значения останутся пустыми, и
+ * isFirebaseConfigured станет false.
  */
+const FIREBASE_VARS = [
+  "API_KEY",
+  "AUTH_DOMAIN",
+  "PROJECT_ID",
+  "STORAGE_BUCKET",
+  "MESSAGING_SENDER_ID",
+  "APP_ID",
+  "MEASUREMENT_ID",
+].map((name) => `NEXT_PUBLIC_FIREBASE_${name}`);
+
 const buildEnv = { ...process.env, NEXT_PUBLIC_BASE_PATH: BASE_PATH };
-for (const name of Object.keys(buildEnv)) {
-  if (name.startsWith("NEXT_PUBLIC_FIREBASE_")) delete buildEnv[name];
-}
+for (const name of FIREBASE_VARS) buildEnv[name] = "";
 
 run(npm, ["run", "build"], {
   cwd: ROOT,
