@@ -79,6 +79,8 @@ export interface UseDevicesResult {
   error: Error | null;
   /** Firestore has delivered at least one snapshot. */
   synced: boolean;
+  /** Whether Firestore is switched on at all. Distinguishes "off" from "broken". */
+  firestoreEnabled: boolean;
   /** No first snapshot yet after STALL_AFTER_MS. See the note in the effect. */
   stalled: boolean;
   /** The SSE sensor stream is attached. Independent of Firestore. */
@@ -138,13 +140,12 @@ export function useDevices(): UseDevicesResult {
   const [stalled, setStalled] = useState(false);
 
   useEffect(() => {
+    // No keys is a supported way to run, not a failure. Firestore only holds
+    // the roster; FALLBACK_DEVICES covers that, and sound recognition never
+    // touched it. Reporting an error here put a red notice over a perfectly
+    // working app for anyone who cloned the repo without a .env.local.
     if (!isFirebaseConfigured) {
       setLoading(false);
-      setError(
-        new Error(
-          "Firebase is not configured. Add the NEXT_PUBLIC_FIREBASE_* keys to .env.local.",
-        ),
-      );
       return;
     }
 
@@ -204,6 +205,7 @@ export function useDevices(): UseDevicesResult {
     // `synced` is what actually says whether Firestore has answered.
     loading: devices.length === 0,
     synced: !loading,
+    firestoreEnabled: isFirebaseConfigured,
     error,
     stalled,
     liveConnected: connected,
