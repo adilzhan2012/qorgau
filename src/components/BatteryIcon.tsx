@@ -8,13 +8,29 @@ function batteryTone(level: number) {
 }
 
 interface BatteryIconProps {
-  /** 0–100 */
-  level: number;
+  /** 0–100, or null when the device has never reported a battery. */
+  level: number | null;
   className?: string;
 }
 
-/** Compact readout for list rows: iOS status-bar shell plus a percentage. */
+/**
+ * Compact readout for list rows: iOS status-bar shell plus a percentage.
+ * A device that has never reported a battery — one on USB, or one that has
+ * never reported at all — shows an empty shell and a dash, not a made-up number.
+ */
 export function BatteryIcon({ level, className = "" }: BatteryIconProps) {
+  if (level === null) {
+    return (
+      <span className={`inline-flex items-center gap-1.5 ${className}`} title="Заряд не сообщается">
+        <svg width="25" height="12" viewBox="0 0 27 13" fill="none" aria-hidden="true" className="shrink-0">
+          <rect x="0.5" y="0.5" width="23" height="12" rx="3.6" className="stroke-white/15" strokeWidth="1" />
+          <path d="M25 4.4v4.2a2.4 2.4 0 0 0 0-4.2Z" className="fill-white/15" />
+        </svg>
+        <span className="text-[13px] font-medium tabular-nums text-faint">—</span>
+      </span>
+    );
+  }
+
   const clamped = Math.max(0, Math.min(100, Math.round(level)));
   const tone = batteryTone(clamped);
 
@@ -41,7 +57,17 @@ export function BatteryIcon({ level, className = "" }: BatteryIconProps) {
  * Panel readout: a big numeral with a small caption and a thin rail beneath —
  * the Health-app stat card, not a gauge.
  */
-export function BatteryStat({ level }: { level: number }) {
+export function BatteryStat({ level }: { level: number | null }) {
+  if (level === null) {
+    return (
+      <div className="rounded-2xl bg-white/[0.04] p-4">
+        <span className="text-[34px] font-semibold leading-none tracking-tightest text-faint">—</span>
+        <p className="stat-label mt-2">Заряд</p>
+        <p className="mt-2.5 text-[11px] leading-snug text-faint">Плата не сообщает заряд</p>
+      </div>
+    );
+  }
+
   const clamped = Math.max(0, Math.min(100, Math.round(level)));
   const tone = batteryTone(clamped);
 
@@ -89,6 +115,12 @@ export function StatTile({
   );
 }
 
+const STATUS: Record<DeviceStatus, { label: string; pill: string; dot: string }> = {
+  alert: { label: "Тревога", pill: "bg-alarm-soft text-alarm", dot: "bg-alarm" },
+  online: { label: "В сети", pill: "bg-accent-soft text-accent", dot: "bg-accent" },
+  offline: { label: "Нет сигнала", pill: "bg-white/[0.06] text-muted", dot: "bg-faint" },
+};
+
 interface StatusPillProps {
   status: DeviceStatus;
   /** Compact drops the dot's breathing room for tight rows. */
@@ -98,16 +130,16 @@ interface StatusPillProps {
 
 /** Soft tinted pill — a dot plus a word, no border. */
 export function StatusPill({ status, compact = false, className = "" }: StatusPillProps) {
-  const alert = status === "alert";
+  const tone = STATUS[status];
 
   return (
     <span
       className={`inline-flex shrink-0 items-center gap-1.5 rounded-full font-medium transition-colors duration-300 ease-apple ${
         compact ? "px-2 py-[3px] text-[11px]" : "px-2.5 py-1 text-[12px]"
-      } ${alert ? "bg-alarm-soft text-alarm" : "bg-accent-soft text-accent"} ${className}`}
+      } ${tone.pill} ${className}`}
     >
-      <span className={`h-1.5 w-1.5 rounded-full ${alert ? "bg-alarm" : "bg-accent"}`} />
-      {alert ? "Тревога" : "В сети"}
+      <span className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} />
+      {tone.label}
     </span>
   );
 }
@@ -116,9 +148,7 @@ export function StatusDot({ status, className = "" }: { status: DeviceStatus; cl
   return (
     <span
       aria-hidden="true"
-      className={`inline-block h-2 w-2 shrink-0 rounded-full transition-colors duration-300 ease-apple ${
-        status === "alert" ? "bg-alarm" : "bg-accent"
-      } ${className}`}
+      className={`inline-block h-2 w-2 shrink-0 rounded-full transition-colors duration-300 ease-apple ${STATUS[status].dot} ${className}`}
     />
   );
 }

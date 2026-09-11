@@ -36,6 +36,8 @@ export interface LiveReading {
   /** The 16 band energies, for the live spectrum strip. */
   bands: number[];
   source: ReadingSource;
+  /** Percentage the board reported alongside the frame, if it has a battery. */
+  battery: number | null;
   /** While this is in the future the device stays in `alert`. */
   alertUntil: number;
 }
@@ -54,6 +56,7 @@ export function makeReading(
   deviceId: string,
   source: ReadingSource,
   features: Features,
+  battery: number | null = null,
   at: number = Date.now(),
 ): LiveReading {
   const classification = classify(features);
@@ -68,12 +71,13 @@ export function makeReading(
       classification,
       top: "other",
       topValue: 0,
-      status: "normal",
+      status: "online",
       soundType: null,
       reasons: [],
       rms: features.rms,
       bands: features.bands,
       source,
+      battery,
       alertUntil: 0,
     };
   }
@@ -86,12 +90,13 @@ export function makeReading(
     classification,
     top: top.name,
     topValue: top.value,
-    status: alerting ? "alert" : "normal",
+    status: alerting ? "alert" : "online",
     soundType: alerting ? SOUND_CLASS_LABELS[top.name] : null,
     reasons: explain(features, top.name),
     rms: features.rms,
     bands: features.bands,
     source,
+    battery,
     alertUntil: alerting ? at + ALERT_HOLD_MS : 0,
   };
 }
@@ -111,13 +116,20 @@ export function mergeReading(
   incoming: LiveReading,
 ): LiveReading {
   const holding = previous !== undefined && previous.alertUntil > incoming.at;
-  if (!holding || !previous) return incoming;
+  if (!holding || !previous) {
+    // A board without a battery sensor says nothing about it; keep the last
+    // figure it did report rather than flickering to "unknown".
+    return incoming.battery === null && previous
+      ? { ...incoming, battery: previous.battery }
+      : incoming;
+  }
 
   const incomingAlerts = incoming.alertUntil > incoming.at;
   const keepVerdict = !incomingAlerts || incoming.topValue <= previous.topValue;
 
   return {
     ...incoming,
+    battery: incoming.battery ?? previous.battery,
     status: "alert",
     alertUntil: Math.max(previous.alertUntil, incoming.alertUntil),
     // The spectrum and level freeze with the verdict: a flat, silent spectrum

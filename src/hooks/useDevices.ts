@@ -1,205 +1,117 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  collection,
-  onSnapshot,
-  Timestamp,
-  type DocumentData,
-  type QueryDocumentSnapshot,
-} from "firebase/firestore";
-import { db, isFirebaseConfigured } from "@/lib/firebase";
-import { FALLBACK_DEVICES } from "@/lib/fallbackDevices";
+
+import type { SummaryMap } from "@/lib/live/history";
 import type { LiveReading } from "@/lib/live/readings";
-import {
-  SOUND_CLASSES,
-  type Classification,
-  type Device,
-  type DeviceStatus,
-} from "@/lib/types";
+import type { Device, DeviceRecord, DeviceStatus } from "@/lib/types";
 
-function toDate(value: unknown): Date | null {
-  if (value instanceof Timestamp) return value.toDate();
-  if (value instanceof Date) return value;
-  if (typeof value === "number") return new Date(value);
-  if (typeof value === "string") {
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  }
-  return null;
+/**
+ * A device is online while frames keep arriving. Frames come ~15×/s, so a
+ * ten-second gap means the source has stopped — unplugged, closed, or the
+ * microphone was switched off — not that a frame was late.
+ */
+export const ONLINE_WINDOW_MS = 10_000;
+
+function statusOf(reading: LiveReading | undefined, now: number): DeviceStatus {
+  if (!reading) return "offline";
+  if (reading.alertUntil > now) return "alert";
+  return now - reading.at < ONLINE_WINDOW_MS ? "online" : "offline";
 }
 
 /**
- * Documents written before the classification field existed simply lack it,
- * so a missing or malformed breakdown degrades to null rather than to zeros —
- * the panel can then say "no breakdown" instead of showing a false 0%.
+ * Lays live readings and remembered summaries over the roster.
+ *
+ * The roster says which devices exist and where they are. A live reading
+ * says what a device hears right now and wins outright. A summary is what it
+ * last said in an earlier session — enough for "Бензопила 82%, 3 минуты
+ * назад", never enough to call it online.
  */
-function toClassification(value: unknown): Classification | null {
-  if (!value || typeof value !== "object") return null;
+function compose(
+  records: DeviceRecord[],
+  readings: Record<string, LiveReading>,
+  summaries: SummaryMap,
+  now: number,
+): Device[] {
+  return records
+    .map((record): Device => {
+      const reading = readings[record.id];
+      if (reading) {
+        const status = statusOf(reading, now);
+        return {
+          ...record,
+          status,
+          lastSignal: new Date(reading.at),
+          soundType: status === "alert" ? reading.soundType : null,
+          battery: reading.battery,
+          classification: reading.classification,
+          lastSource: reading.source,
+          live:
+            status === "offline"
+              ? null
+              : {
+                  at: reading.at,
+                  reasons: reading.reasons,
+                  rms: reading.rms,
+                  bands: reading.bands,
+                  source: reading.source,
+                },
+        };
+      }
 
-  const source = value as Record<string, unknown>;
-  const result = {} as Classification;
-  let present = false;
-
-  for (const name of SOUND_CLASSES) {
-    const raw = Number(source[name]);
-    if (Number.isFinite(raw)) {
-      result[name] = Math.max(0, Math.min(100, raw));
-      present = true;
-    } else {
-      result[name] = 0;
-    }
-  }
-
-  return present ? result : null;
-}
-
-function toDevice(snapshot: QueryDocumentSnapshot<DocumentData>): Device {
-  const data = snapshot.data();
-  const status: DeviceStatus = data.status === "alert" ? "alert" : "normal";
-
-  return {
-    id: typeof data.id === "string" && data.id ? data.id : snapshot.id,
-    name: typeof data.name === "string" ? data.name : snapshot.id,
-    lat: Number(data.lat),
-    lng: Number(data.lng),
-    status,
-    lastSignal: toDate(data.lastSignal),
-    soundType: typeof data.soundType === "string" ? data.soundType : null,
-    audioUrl: typeof data.audioUrl === "string" ? data.audioUrl : null,
-    battery: Number.isFinite(Number(data.battery)) ? Number(data.battery) : 0,
-    classification: toClassification(data.classification),
-  };
-}
-
-export interface UseDevicesResult {
-  devices: Device[];
-  loading: boolean;
-  error: Error | null;
-  /** Firestore has delivered at least one snapshot. */
-  synced: boolean;
-  /** Whether Firestore is switched on at all. Distinguishes "off" from "broken". */
-  firestoreEnabled: boolean;
-  /** No first snapshot yet after STALL_AFTER_MS. See the note in the effect. */
-  stalled: boolean;
-}
-
-/**
- * Lays the live readings over the roster. Firestore says which traps exist and
- * where they are; the sensor stream says what they are hearing right now, and
- * that always wins.
- */
-function applyLive(base: Device[], readings: Record<string, LiveReading>): Device[] {
-  return base
-    .map((device) => {
-      const reading = readings[device.id];
-      if (!reading) return device;
-
+      const summary = summaries[record.id];
       return {
-        ...device,
-        status: reading.status,
-        classification: reading.classification,
-        soundType: reading.soundType,
-        lastSignal: new Date(reading.at),
-        live: {
-          at: reading.at,
-          reasons: reading.reasons,
-          rms: reading.rms,
-          bands: reading.bands,
-          source: reading.source,
-        },
-      } satisfies Device;
+        ...record,
+        status: "offline",
+        lastSignal: summary ? new Date(summary.at) : null,
+        soundType: null,
+        battery: summary?.battery ?? null,
+        classification: summary?.classification ?? null,
+        lastSource: summary?.source ?? null,
+        live: null,
+      };
     })
     .sort((a, b) => {
-      if (a.status !== b.status) return a.status === "alert" ? -1 : 1;
+      if (a.status !== b.status) return RANK[a.status] - RANK[b.status];
       return a.name.localeCompare(b.name, "ru");
     });
 }
 
-/**
- * Firestore retries transport failures indefinitely instead of calling the
- * error handler, so an unreachable backend is indistinguishable from a slow
- * one. Past this point we say so rather than showing an endless skeleton.
- */
-const STALL_AFTER_MS = 10_000;
+const RANK: Record<DeviceStatus, number> = { alert: 0, online: 1, offline: 2 };
 
 /**
- * Realtime subscription to the `devices` collection.
- * Alerting devices sort first, then by name — so the list never reshuffles
- * arbitrarily between snapshots.
+ * Devices with their status, re-evaluated exactly when a status can change.
+ *
+ * While frames arrive, every publish re-renders anyway. The only transitions
+ * that happen on their own are alert → online (the latch expiring) and online
+ * → offline (the source going quiet), and both have a known moment — so we
+ * schedule a single timer for the earliest one instead of polling.
  */
-export function useDevices(readings: Record<string, LiveReading>): UseDevicesResult {
-  const [remote, setRemote] = useState<Device[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  const [stalled, setStalled] = useState(false);
+export function useDevices(
+  records: DeviceRecord[],
+  readings: Record<string, LiveReading>,
+  summaries: SummaryMap,
+): Device[] {
+  const [tick, setTick] = useState(0);
 
   useEffect(() => {
-    // No keys is a supported way to run, not a failure. Firestore only holds
-    // the roster; FALLBACK_DEVICES covers that, and sound recognition never
-    // touched it. Reporting an error here put a red notice over a perfectly
-    // working app for anyone who cloned the repo without a .env.local.
-    if (!isFirebaseConfigured) {
-      setLoading(false);
-      return;
+    const now = Date.now();
+    let next = Infinity;
+    for (const reading of Object.values(readings)) {
+      if (reading.alertUntil > now) next = Math.min(next, reading.alertUntil);
+      const offlineAt = reading.at + ONLINE_WINDOW_MS;
+      if (offlineAt > now) next = Math.min(next, offlineAt);
     }
+    if (!Number.isFinite(next)) return;
 
-    const stallTimer = window.setTimeout(() => setStalled(true), STALL_AFTER_MS);
+    const timer = window.setTimeout(() => setTick((t) => t + 1), next - now + 20);
+    return () => window.clearTimeout(timer);
+  }, [readings, tick]);
 
-    const unsubscribe = onSnapshot(
-      collection(db, "devices"),
-      (snapshot) => {
-        const next = snapshot.docs
-          .map(toDevice)
-          .filter((device) => Number.isFinite(device.lat) && Number.isFinite(device.lng))
-          .sort((a, b) => {
-            if (a.status !== b.status) return a.status === "alert" ? -1 : 1;
-            return a.name.localeCompare(b.name);
-          });
-
-        setRemote(next);
-        setError(null);
-
-        // Firestore replays an empty snapshot from the local cache before it
-        // has heard from the server, so an unreachable backend arrives looking
-        // exactly like an empty collection. Only a server snapshot settles it.
-        if (!snapshot.metadata.fromCache) {
-          window.clearTimeout(stallTimer);
-          setStalled(false);
-          setLoading(false);
-        } else if (next.length > 0) {
-          // Cached devices are still worth showing right away.
-          setLoading(false);
-        }
-      },
-      (err) => {
-        window.clearTimeout(stallTimer);
-        setError(err);
-        setLoading(false);
-      },
-    );
-
-    return () => {
-      window.clearTimeout(stallTimer);
-      unsubscribe();
-    };
-  }, []);
-
-  // Fall back to the built-in roster until Firestore answers — and keep using
-  // it if it never does, so the demo never stalls on a skeleton.
-  const devices = useMemo(
-    () => applyLive(remote.length > 0 ? remote : FALLBACK_DEVICES, readings),
-    [remote, readings],
+  return useMemo(
+    () => compose(records, readings, summaries, Date.now()),
+    // `tick` is the whole point: it forces a recompute at the scheduled moment.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [records, readings, summaries, tick],
   );
-
-  return {
-    devices,
-    // The fallback roster is never empty, so there is nothing to skeleton for.
-    // `synced` is what actually says whether Firestore has answered.
-    loading: devices.length === 0,
-    synced: !loading,
-    firestoreEnabled: isFirebaseConfigured,
-    error,
-    stalled,
-  };
 }

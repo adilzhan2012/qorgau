@@ -23,7 +23,7 @@ export function formatRelativeTime(date: Date | null, now: number = Date.now()):
 }
 
 /** Russian needs three plural forms, picked by the last digits of the count. */
-function plural(n: number, one: string, few: string, many: string): string {
+export function plural(n: number, one: string, few: string, many: string): string {
   const mod100 = n % 100;
   if (mod100 >= 11 && mod100 <= 14) return many;
   const mod10 = n % 10;
@@ -32,10 +32,11 @@ function plural(n: number, one: string, few: string, many: string): string {
   return many;
 }
 
-/** Seconds → m:ss, for the audio player. */
-export function formatDuration(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
+/** «14:02:37» — the exact moment, for tooltips over relative times. */
+export function formatClock(at: number): string {
+  return new Date(at).toLocaleTimeString("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }

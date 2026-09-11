@@ -5,7 +5,12 @@
  * Что делает плата:
  *   1. пишет звук с микрофона на 16 кГц кадрами по 1024 отсчёта (64 мс);
  *   2. считает БПФ и вытаскивает из кадра 6 чисел + 16 полос спектра;
- *   3. печатает всё это одной строкой JSON в USB Serial.
+ *   3. печатает всё это одной строкой JSON в USB Serial;
+ *   4. представляется по имени (ID) и позволяет сайту это имя поменять.
+ *
+ * ID хранится во флеше платы. Прошивать под каждую точку не нужно: на сайте
+ * открываете устройство → «Записать ID в плату», и плата с тех пор сама
+ * находит своё место на карте на любом ноутбуке.
  *
  * Что делает САЙТ: решает, что это за звук. Плата ничего не классифицирует —
  * она только слушает и описывает. Поэтому логику распознавания можно менять
@@ -32,19 +37,36 @@
  *   Откройте Монитор порта на 115200. Сначала плата сама проверит микрофон и
  *   напишет, что не так с распиновкой, если что-то не так. Затем пойдут строки вида
  *   {"id":"QRG-001","rms":-52.3,...}. Затем на сайте нажмите
- *   «ESP32 по USB» и выберите тот же порт.
+ *   «Подключить плату ESP32» и выберите тот же порт — один раз, дальше плата
+ *   будет подключаться сама.
  *   ВНИМАНИЕ: Монитор порта надо ЗАКРЫТЬ перед подключением из браузера —
  *   COM-порт может держать только одна программа.
+ *
+ * ── Команды с сайта (строка JSON в порт) ───────────────────────────
+ *   {"get":"hello"}            → плата отвечает {"hello":"qorgau","fw":...,"id":...,"mic":...}
+ *   {"set":{"id":"QRG-007"}}   → сохраняет новый ID во флеш и отвечает hello
  */
 
+#include <ctype.h>
 #include <math.h>
+#include <string.h>
+#include <Preferences.h>
 
 // ─────────────────────────── Настройки ───────────────────────────
 
-#define DEVICE_ID   "QRG-001"   // за какое устройство отчитывается плата
+#define FW_VERSION  "1.1"
+#define DEFAULT_ID  "QRG-001"   // ID до того, как сайт запишет свой
 #define PIN_BCLK    4           // SCK на модуле INMP441
 #define PIN_LRCL    5           // WS
 #define PIN_DOUT    6           // SD
+
+// Батарея. -1 — плата на USB и заряд не измеряет (в JSON поля "bat" не будет).
+// Для автономной точки: делитель 1:1 (два одинаковых резистора) с плюса
+// Li-ion на любой ADC-пин, например GPIO1, и PIN_BATTERY 1.
+#define PIN_BATTERY      -1
+#define BATTERY_DIVIDER  2.0f   // во сколько раз делитель уменьшает напряжение
+#define BATTERY_EMPTY_MV 3300
+#define BATTERY_FULL_MV  4200
 
 #define SAMPLE_RATE 16000
 #define FRAME_LEN   1024        // 64 мс — столько же берёт браузер
@@ -52,17 +74,6 @@
 #define BAND_COUNT  16
 #define BAND_LOW_HZ 60.0f
 #define BAND_HI_HZ  8000.0f
-
-// Wi-Fi вместо USB. По умолчанию выключено: на школьной сети устройства
-// часто изолированы друг от друга и до ноутбука пакет просто не дойдёт.
-#define USE_WIFI 0
-#if USE_WIFI
-  #define WIFI_SSID "имя_сети"
-  #define WIFI_PASS "пароль"
-  #define SERVER_URL "http://192.168.0.10:3100/api/ingest"  // IP ноутбука
-  #include <WiFi.h>
-  #include <HTTPClient.h>
-#endif
 
 // ──────────────────── I2S: две версии ядра ESP32 ──────────────────
 // В ядре 3.x старый драйвер объявлен устаревшим и появился класс I2SClass.
@@ -93,6 +104,14 @@ static int     bandTo[BAND_COUNT];
 #define HISTORY 8
 static float levelHistory[HISTORY];
 static int   historyCount = 0;
+
+// Кто мы. Читается из флеша при старте, меняется командой с сайта.
+static Preferences prefs;
+static char deviceId[25] = DEFAULT_ID;
+static char micStatus[96] = "ok";     // "ok" или что нашла проверка микрофона
+static int  batteryPct = -1;          // -1 — не измеряем
+static char cmdBuf[128];              // строка команды с сайта, копится по байту
+static int  cmdLen = 0;
 
 // ───────────────────────── Утилиты ────────────────────────────────
 
@@ -345,17 +364,123 @@ static void micSelfTest() {
   if (frames == 0) {
     Serial.println("ОШИБКА: I2S не отдал ни одного кадра.");
     Serial.println("  Проверьте BCLK и WS — без тактов микрофон молчит.");
+    strlcpy(micStatus, "I2S не отдаёт кадры: проверьте BCLK и WS", sizeof(micStatus));
   } else if (rawMin == rawMax) {
     Serial.printf("ОШИБКА: линия SD залипла на одном значении (%ld).\n", (long)rawMin);
     Serial.println("  Проверьте SD/DOUT и питание VDD=3V3. Землю не забыли?");
+    strlcpy(micStatus, "линия SD залипла: проверьте SD, VDD и GND", sizeof(micStatus));
   } else if (maxDb < -85.0f) {
     Serial.printf("ОШИБКА: данные идут, но уровень на нуле (%.0f дБ).\n", maxDb);
     Serial.println("  Чаще всего это L/R: он должен быть посажен на GND.");
+    strlcpy(micStatus, "уровень на нуле: L/R должен сидеть на GND", sizeof(micStatus));
   } else {
     Serial.printf("OK: микрофон работает. Уровень %.0f...%.0f дБ.\n", minDb, maxDb);
     Serial.println("  Похлопайте — верхняя цифра должна подскочить к -20 дБ.");
+    strlcpy(micStatus, "ok", sizeof(micStatus));
   }
   Serial.println("------------------------------------------");
+}
+
+// ──────────────────── ID, hello и команды с сайта ─────────────────
+
+/** Буквы, цифры, дефис и подчёркивание, 1–24 знака — ровно то, что принимает сайт. */
+static bool validId(const char *id) {
+  size_t n = strlen(id);
+  if (n == 0 || n > 24) return false;
+  for (size_t i = 0; i < n; i++) {
+    char c = id[i];
+    bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '-' || c == '_';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+static void loadDeviceId() {
+  prefs.begin("qorgau", true);
+  String stored = prefs.getString("id", "");
+  prefs.end();
+  if (stored.length() > 0 && validId(stored.c_str())) {
+    strlcpy(deviceId, stored.c_str(), sizeof(deviceId));
+  }
+}
+
+static void saveDeviceId(const char *id) {
+  prefs.begin("qorgau", false);
+  prefs.putString("id", id);
+  prefs.end();
+  strlcpy(deviceId, id, sizeof(deviceId));
+}
+
+/** Так плата представляется: при старте и по запросу сайта. */
+static void printHello() {
+  Serial.printf("{\"hello\":\"qorgau\",\"fw\":\"%s\",\"id\":\"%s\",\"mic\":\"%s\"}\n",
+                FW_VERSION, deviceId, micStatus);
+}
+
+/**
+ * Разбирает одну строку от сайта. JSON-библиотека не нужна: команд две,
+ * и обе узнаются по подстроке.
+ */
+static void handleCommand(const char *line) {
+  if (strstr(line, "\"get\"") && strstr(line, "\"hello\"")) {
+    printHello();
+    return;
+  }
+
+  const char *set = strstr(line, "\"set\"");
+  if (set) {
+    const char *key = strstr(set, "\"id\"");
+    if (!key) return;
+    const char *q1 = strchr(key + 4, '"');          // открывающая кавычка значения
+    if (!q1) return;
+    const char *q2 = strchr(q1 + 1, '"');
+    if (!q2) return;
+    size_t n = (size_t)(q2 - q1 - 1);
+    if (n == 0 || n >= sizeof(deviceId)) return;
+
+    char id[25];
+    memcpy(id, q1 + 1, n);
+    id[n] = '\0';
+    for (size_t i = 0; i < n; i++) id[i] = (char)toupper((unsigned char)id[i]);
+
+    if (!validId(id)) {
+      Serial.println("{\"error\":\"ID: только латиница, цифры, дефис, до 24 знаков\"}");
+      return;
+    }
+    saveDeviceId(id);
+    printHello();
+  }
+}
+
+/** Собирает байты из порта в строку и отдаёт готовые строки на разбор. Не блокирует. */
+static void pollCommands() {
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (cmdLen > 0) {
+        cmdBuf[cmdLen] = '\0';
+        handleCommand(cmdBuf);
+        cmdLen = 0;
+      }
+    } else if (cmdLen < (int)sizeof(cmdBuf) - 1) {
+      cmdBuf[cmdLen++] = c;
+    } else {
+      cmdLen = 0;   // мусор длиннее буфера — выбрасываем
+    }
+  }
+}
+
+/** Заряд в процентах по напряжению на делителе. Раз в две секунды — чаще незачем. */
+static void pollBattery() {
+#if PIN_BATTERY >= 0
+  static uint32_t last = 0;
+  if (millis() - last < 2000) return;
+  last = millis();
+  float mv = (float)analogReadMilliVolts(PIN_BATTERY) * BATTERY_DIVIDER;
+  float pct = (mv - BATTERY_EMPTY_MV) * 100.0f / (BATTERY_FULL_MV - BATTERY_EMPTY_MV);
+  batteryPct = (int)lroundf(pct < 0.0f ? 0.0f : (pct > 100.0f ? 100.0f : pct));
+#endif
 }
 
 void setup() {
@@ -363,24 +488,29 @@ void setup() {
   delay(300);
 
   setupTables();
+  loadDeviceId();
+#if PIN_BATTERY >= 0
+  analogReadResolution(12);
+#endif
 
   if (!setupI2S()) {
     // Не молчим: без этого «нет данных» и «нет микрофона» выглядят одинаково.
+    strlcpy(micStatus, "I2S не запустился: проверьте распиновку INMP441", sizeof(micStatus));
     while (true) {
+      printHello();
       Serial.println("{\"error\":\"I2S не запустился — проверьте распиновку INMP441\"}");
+      pollCommands();   // ID можно записать и в таком состоянии
       delay(2000);
     }
   }
 
   micSelfTest();
-
-#if USE_WIFI
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) delay(250);
-#endif
+  printHello();
 }
 
 void loop() {
+  pollCommands();
+  pollBattery();
   if (!readFrame()) return;
 
   // ── громкость и резкость нарастания ──
@@ -421,8 +551,12 @@ void loop() {
   char line[512];
   int n = snprintf(line, sizeof(line),
       "{\"id\":\"%s\",\"rms\":%.1f,\"zcr\":%.3f,\"attack\":%.3f,"
-      "\"harmonic\":%.3f,\"flatness\":%.3f,\"spread\":%.3f,\"bands\":[",
-      DEVICE_ID, rms, zcr, attack, harmonic, flatness, spread);
+      "\"harmonic\":%.3f,\"flatness\":%.3f,\"spread\":%.3f,",
+      deviceId, rms, zcr, attack, harmonic, flatness, spread);
+  if (batteryPct >= 0) {
+    n += snprintf(line + n, sizeof(line) - n, "\"bat\":%d,", batteryPct);
+  }
+  n += snprintf(line + n, sizeof(line) - n, "\"bands\":[");
 
   for (int b = 0; b < BAND_COUNT && n < (int)sizeof(line) - 12; b++) {
     n += snprintf(line + n, sizeof(line) - n, "%s%.4f", b ? "," : "", bands[b]);
@@ -430,14 +564,4 @@ void loop() {
   snprintf(line + n, sizeof(line) - n, "]}");
 
   Serial.println(line);
-
-#if USE_WIFI
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(SERVER_URL);
-    http.addHeader("Content-Type", "application/json");
-    http.POST((uint8_t *)line, strlen(line));
-    http.end();
-  }
-#endif
 }

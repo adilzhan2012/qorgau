@@ -1,4 +1,9 @@
-export type DeviceStatus = "normal" | "alert";
+/**
+ * A device is in `alert` while a verdict is latched, `online` while something
+ * is actually feeding it sound, and `offline` the rest of the time. Nothing
+ * here is assumed: a device that has never reported is offline.
+ */
+export type DeviceStatus = "alert" | "online" | "offline";
 
 /** The sound classes the classifier reports against. */
 export const SOUND_CLASSES = [
@@ -46,25 +51,51 @@ export interface LiveInfo {
   source: ReadingSource;
 }
 
-export interface Device {
+/**
+ * What the user actually entered about a device. This is what gets persisted;
+ * everything else on `Device` is derived from live readings.
+ */
+export interface DeviceRecord {
   id: string;
   name: string;
   lat: number;
   lng: number;
+  /** ms since epoch. */
+  createdAt: number;
+  /** How the record came to exist. Boards announce themselves; people type. */
+  origin: "manual" | "board";
+}
+
+export interface Device extends DeviceRecord {
   status: DeviceStatus;
-  /** Normalised from a Firestore Timestamp. Null when the field is missing. */
+  /** Null until the device has reported at least once. */
   lastSignal: Date | null;
+  /** Russian label for the latched alert, or null. */
   soundType: string | null;
-  audioUrl: string | null;
-  /** Percentage, 0–100. */
-  battery: number;
-  /** Null for devices whose documents predate the classification field. */
+  /** Percentage, 0–100, or null when the device has never reported one. */
+  battery: number | null;
+  /** Null until the device has reported at least once. */
   classification: Classification | null;
   /** Present only while a sensor is feeding this device. */
   live?: LiveInfo | null;
+  /** Where the last reading came from, even after the sensor stopped. */
+  lastSource: ReadingSource | null;
 }
 
-export type DeviceFilter = "all" | "alert" | "normal";
+export type DeviceFilter = "all" | "alert" | "online" | "offline";
+
+/** An alert worth remembering: what, where, how sure, from which source. */
+export interface SoundEvent {
+  id: string;
+  deviceId: string;
+  /** ms since epoch. */
+  at: number;
+  sound: SoundClass;
+  /** 0–100. */
+  value: number;
+  source: ReadingSource;
+  reasons: string[];
+}
 
 /** The class the model is most confident about, or null without a breakdown. */
 export function topSoundClass(

@@ -7,13 +7,10 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "seed": "node scripts/seed.mjs",
     "audio": "node scripts/gen-audio.mjs",
-    "bridge": "powershell -ExecutionPolicy Bypass -File scripts/serial-bridge.ps1",
     "deploy": "node scripts/deploy.mjs"
   },
   "dependencies": {
-    "firebase": "^11.10.0",
     "maplibre-gl": "^6.9.0",
     "next": "^15.5.0",
     "react": "^19.1.0",
@@ -25,7 +22,6 @@
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "autoprefixer": "^10.4.21",
-    "dotenv": "^16.6.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.3"

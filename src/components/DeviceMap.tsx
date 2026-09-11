@@ -5,6 +5,7 @@ import Map, {
   AttributionControl,
   Marker,
   NavigationControl,
+  type MapLayerMouseEvent,
   type MapRef,
 } from "react-map-gl/maplibre";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -24,14 +25,24 @@ const INITIAL_VIEW = {
   zoom: 11.2,
 };
 
+export interface LatLng {
+  lat: number;
+  lng: number;
+}
+
 interface DeviceMapProps {
   devices: Device[];
   selectedId: string | null;
   onSelect: (device: Device) => void;
   mapRef: React.RefObject<MapRef | null>;
+  /**
+   * While set, a click on the map picks a location instead of deselecting,
+   * and the draft point (if any) is drawn so the user sees where it landed.
+   */
+  pick?: { draft: LatLng | null; onPick: (point: LatLng) => void } | null;
 }
 
-export function DeviceMap({ devices, selectedId, onSelect, mapRef }: DeviceMapProps) {
+export function DeviceMap({ devices, selectedId, onSelect, mapRef, pick = null }: DeviceMapProps) {
   const fitted = useRef(false);
   const [style, setStyle] = useState<MapStyleName>(resolveDefaultStyle);
   // fitBounds is a no-op until the style has loaded, so wait for it rather
@@ -61,9 +72,18 @@ export function DeviceMap({ devices, selectedId, onSelect, mapRef }: DeviceMapPr
     (device: Device) => (event: { originalEvent: MouseEvent }) => {
       // Otherwise the map swallows it as a background click.
       event.originalEvent.stopPropagation();
+      if (pick) return;
       onSelect(device);
     },
-    [onSelect],
+    [onSelect, pick],
+  );
+
+  const handleMapClick = useCallback(
+    (event: MapLayerMouseEvent) => {
+      if (!pick) return;
+      pick.onPick({ lat: event.lngLat.lat, lng: event.lngLat.lng });
+    },
+    [pick],
   );
 
   return (
@@ -75,6 +95,8 @@ export function DeviceMap({ devices, selectedId, onSelect, mapRef }: DeviceMapPr
         style={{ width: "100%", height: "100%" }}
         attributionControl={false}
         onLoad={() => setReady(true)}
+        onClick={handleMapClick}
+        cursor={pick ? "crosshair" : "auto"}
       >
         <AttributionControl compact position="bottom-left" />
         <NavigationControl position="bottom-right" showCompass={false} />
@@ -96,7 +118,17 @@ export function DeviceMap({ devices, selectedId, onSelect, mapRef }: DeviceMapPr
             </button>
           </Marker>
         ))}
+
+        {pick?.draft && (
+          <Marker longitude={pick.draft.lng} latitude={pick.draft.lat} anchor="center">
+            <span className="relative flex h-8 w-8 items-center justify-center">
+              <span className="absolute inset-0 animate-breathe rounded-full bg-ink" />
+              <span className="relative block h-[14px] w-[14px] rounded-full bg-ink ring-2 ring-canvas/80 shadow-lifted" />
+            </span>
+          </Marker>
+        )}
       </Map>
+
 
       {/* Basemap picker — a Control Center style glass pill */}
       <div className="glass absolute right-4 top-4 z-10 flex rounded-full p-[3px] shadow-card md:right-[416px]">

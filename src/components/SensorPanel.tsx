@@ -2,20 +2,18 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { connectSerial, isSerialSupported, type SerialHandle } from "@/lib/audio/serialSensor";
-import { playSample, startMicrophone, type SourceHandle } from "@/lib/audio/sources";
-import { bandLabel } from "@/lib/audio/features";
-import { withBasePath } from "@/lib/basePath";
+import type { Board, BoardsResult } from "@/hooks/useBoards";
 import type { PublishFeatures } from "@/hooks/useReadings";
+import { bandLabel } from "@/lib/audio/features";
+import { playSample, startMicrophone, type SourceHandle } from "@/lib/audio/sources";
+import { withBasePath } from "@/lib/basePath";
+import { plural } from "@/lib/time";
 import {
   SOUND_CLASSES,
   SOUND_CLASS_LABELS,
-  SOURCE_LABELS,
   topSoundClass,
   type Device,
 } from "@/lib/types";
-
-type Mode = "idle" | "mic" | "serial";
 
 /** One entry of public/audio/samples.json, written by scripts/gen-audio.mjs. */
 interface SampleFile {
@@ -27,41 +25,153 @@ interface SampleFile {
 
 interface SensorPanelProps {
   devices: Device[];
+  boards: BoardsResult;
+  /** The device the laptop's own sound (microphone, files) reports as. */
   sensorDeviceId: string;
   onSensorDeviceChange: (id: string) => void;
-  /** The device the sensor reports as, carrying its live readings. */
+  /** That device, carrying its live readings. */
   target: Device | null;
   /** Where every frame of features goes. */
   publish: PublishFeatures;
+  onSelectDevice: (id: string) => void;
+  /** Tells the parent whether the microphone is on, for the header pill. */
+  onMicChange: (on: boolean) => void;
+}
+
+const buttonClass =
+  "rounded-xl px-3 py-2.5 text-[13px] font-medium transition-all duration-300 ease-apple active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40";
+
+const selectClass =
+  "w-full rounded-xl bg-raised px-3 py-2 text-[13px] text-ink outline-none focus:ring-2 focus:ring-accent/60";
+
+/** A board and what its device is hearing, on one row. */
+function BoardRow({
+  board,
+  devices,
+  onBind,
+  onDisconnect,
+  onOpen,
+}: {
+  board: Board;
+  devices: Device[];
+  onBind: (deviceId: string) => void;
+  onDisconnect: () => void;
+  onOpen: () => void;
+}) {
+  const device = devices.find((d) => d.id === board.deviceId) ?? null;
+  const top = topSoundClass(device?.classification ?? null);
+  const quiet = board.state === "listening" && board.lastAt > 0 && Date.now() - board.lastAt > 3000;
+
+  return (
+    <li className="rounded-xl bg-white/[0.04] p-3">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={onOpen}
+          disabled={!device}
+          className="flex min-w-0 items-center gap-2 text-left"
+        >
+          <span
+            className={`h-2 w-2 shrink-0 rounded-full ${
+              board.state === "error"
+                ? "bg-alarm"
+                : board.state === "connecting" || quiet
+                  ? "bg-warn"
+                  : "animate-pulse bg-accent"
+            }`}
+          />
+          <span className="min-w-0">
+            <span className="block truncate font-mono text-[12px] text-ink">
+              {board.boardId ?? board.label}
+            </span>
+            <span className="block truncate text-[11px] text-faint">
+              {board.state === "error"
+                ? "ошибка"
+                : board.state === "connecting"
+                  ? "открываю порт…"
+                  : board.boardId === null
+                    ? "жду первый кадр…"
+                    : quiet
+                      ? "кадры не идут"
+                      : `${board.frames} кадров${board.battery !== null ? ` · ${board.battery}%` : ""}`}
+            </span>
+          </span>
+        </button>
+
+        <div className="flex shrink-0 items-center gap-2">
+          {device && top && board.state === "listening" && (
+            <span className="text-right">
+              <span className="block text-[12px] font-medium">{SOUND_CLASS_LABELS[top.name]}</span>
+              <span className="block text-[11px] tabular-nums text-muted">{top.value}%</span>
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={onDisconnect}
+            aria-label="Отключить плату"
+            title="Отключить"
+            className="flex h-6 w-6 items-center justify-center rounded-full bg-white/10 text-muted transition-all duration-300 ease-apple hover:bg-white/20 hover:text-ink active:scale-90"
+          >
+            <svg width="8" height="8" viewBox="0 0 10 10" aria-hidden="true">
+              <path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {board.error && (
+        <p className="mt-2 rounded-lg bg-alarm-soft px-2.5 py-1.5 text-[11px] leading-relaxed text-alarm">
+          {board.error}
+        </p>
+      )}
+
+      {board.state === "listening" && (
+        <label className="mt-2 flex items-center gap-2 text-[11px] text-faint">
+          <span className="shrink-0">→</span>
+          <select
+            value={board.deviceId ?? ""}
+            onChange={(event) => onBind(event.target.value)}
+            className={`${selectClass} py-1.5 text-[12px]`}
+          >
+            {board.deviceId === null && <option value="">выберите устройство</option>}
+            {devices.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name} · {d.id}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+    </li>
+  );
 }
 
 /**
- * The control surface for the demo: pick a trap, feed it sound, watch the site
- * decide. The microphone, the ESP32 over USB and the sample files all produce
- * the same features and go through the same `publish`, so this panel is only
- * choosing which one runs.
+ * The control surface for the demo: plug in boards, pick which device the
+ * laptop's own sound stands in for, feed it, and watch the site decide. Every
+ * source produces the same features and goes through the same `publish`.
  */
 export function SensorPanel({
   devices,
+  boards,
   sensorDeviceId,
   onSensorDeviceChange,
   target,
   publish,
+  onSelectDevice,
+  onMicChange,
 }: SensorPanelProps) {
-  const [mode, setMode] = useState<Mode>("idle");
+  const [micOn, setMicOn] = useState(false);
   const [open, setOpen] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [samples, setSamples] = useState<SampleFile[]>([]);
   const [playing, setPlaying] = useState<string | null>(null);
-  // Resolved after mount: `navigator.serial` does not exist during SSR, and
-  // deciding on it while rendering makes the server and client disagree.
-  const [serialSupported, setSerialSupported] = useState(false);
+  const [connecting, setConnecting] = useState(false);
 
-  useEffect(() => setSerialSupported(isSerialSupported()), []);
-
-  const audioRef = useRef<SourceHandle | null>(null);
-  const serialRef = useRef<SerialHandle | null>(null);
+  const micRef = useRef<SourceHandle | null>(null);
   const sampleRef = useRef<SourceHandle | null>(null);
+
+  useEffect(() => onMicChange(micOn), [micOn, onMicChange]);
 
   useEffect(() => {
     let cancelled = false;
@@ -78,36 +188,39 @@ export function SensorPanel({
     };
   }, []);
 
-  // Release the microphone and the port if the page goes away mid-demo.
+  // Release the microphone if the page goes away mid-demo.
   useEffect(
     () => () => {
-      audioRef.current?.stop();
-      serialRef.current?.stop();
+      micRef.current?.stop();
       sampleRef.current?.stop();
     },
     [],
   );
 
-  const stopAll = useCallback(() => {
-    audioRef.current?.stop();
-    audioRef.current = null;
-    serialRef.current?.stop();
-    serialRef.current = null;
-    setMode("idle");
+  const stopMic = useCallback(() => {
+    micRef.current?.stop();
+    micRef.current = null;
+    setMicOn(false);
   }, []);
+
+  // The microphone follows the selected device: switching the select while it
+  // is on should not keep feeding the old one.
+  useEffect(() => {
+    if (!micRef.current) return;
+    stopMic();
+  }, [sensorDeviceId, stopMic]);
 
   const toggleMic = useCallback(async () => {
     setError(null);
-    if (mode === "mic") {
-      stopAll();
+    if (micRef.current) {
+      stopMic();
       return;
     }
-    stopAll();
     try {
-      audioRef.current = await startMicrophone(sensorDeviceId, (features) =>
+      micRef.current = await startMicrophone(sensorDeviceId, (features) =>
         publish(sensorDeviceId, "mic", features),
       );
-      setMode("mic");
+      setMicOn(true);
     } catch (err) {
       setError(
         err instanceof Error && err.name === "NotAllowedError"
@@ -115,32 +228,22 @@ export function SensorPanel({
           : `Микрофон не открылся: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-  }, [mode, sensorDeviceId, stopAll, publish]);
+  }, [sensorDeviceId, stopMic, publish]);
 
-  const toggleSerial = useCallback(async () => {
+  const connectBoard = useCallback(async () => {
     setError(null);
-    if (mode === "serial") {
-      stopAll();
-      return;
-    }
-    stopAll();
+    setConnecting(true);
     try {
-      serialRef.current = await connectSerial({
-        fallbackDeviceId: sensorDeviceId,
-        onFeatures: (deviceId, features) => publish(deviceId, "esp32", features),
-        onError: (message) => setError(`Обрыв связи с платой: ${message}`),
-        onClose: () => setMode((current) => (current === "serial" ? "idle" : current)),
-      });
-      setMode("serial");
+      await boards.connect();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setError(
-        message.includes("No port selected")
-          ? "Порт не выбран."
-          : `Не удалось открыть порт: ${message}`,
-      );
+      if (!/No port selected|NotFoundError/i.test(message)) {
+        setError(`Не удалось открыть порт: ${message}`);
+      }
+    } finally {
+      setConnecting(false);
     }
-  }, [mode, sensorDeviceId, stopAll, publish]);
+  }, [boards]);
 
   const playFile = useCallback(
     async (sample: SampleFile) => {
@@ -168,7 +271,17 @@ export function SensorPanel({
   const live = target?.live ?? null;
   const classification = target?.classification ?? null;
   const top = topSoundClass(classification);
-  const listening = mode !== "idle" || playing !== null;
+  const listeningBoards = boards.boards.filter((b) => b.state === "listening").length;
+  const listening = listeningBoards > 0 || micOn || playing !== null;
+
+  const summary =
+    listeningBoards > 0
+      ? `${listeningBoards} ${plural(listeningBoards, "плата", "платы", "плат")}${micOn ? " + микрофон" : ""}`
+      : micOn
+        ? "микрофон ноутбука"
+        : playing
+          ? "проигрывание файла"
+          : "не слушает";
 
   return (
     // Top-left: the basemap pill owns the top-right, and the map attribution
@@ -185,16 +298,8 @@ export function SensorPanel({
               listening ? "animate-pulse bg-accent" : "bg-faint"
             }`}
           />
-          <span className="text-[15px] font-medium">Датчик</span>
-          <span className="min-w-0 truncate text-[12px] text-muted">
-            {mode === "mic"
-              ? SOURCE_LABELS.mic
-              : mode === "serial"
-                ? SOURCE_LABELS.esp32
-                : playing
-                  ? SOURCE_LABELS.sample
-                  : "не слушает"}
-          </span>
+          <span className="text-[15px] font-medium">Датчики</span>
+          <span className="min-w-0 truncate text-[12px] text-muted">{summary}</span>
         </span>
         <svg
           width="11"
@@ -211,44 +316,78 @@ export function SensorPanel({
 
       {open && (
         <div className="border-t border-white/[0.06] px-4 pb-4 pt-3">
-          {/* Which trap the sensor is standing in for */}
-          <label className="stat-label mb-1.5 block">Устройство</label>
-          <select
-            value={sensorDeviceId}
-            onChange={(event) => onSensorDeviceChange(event.target.value)}
-            className="mb-3 w-full rounded-xl bg-raised px-3 py-2 text-[13px] text-ink outline-none"
-          >
-            {devices.map((device) => (
-              <option key={device.id} value={device.id}>
-                {device.name}
-              </option>
-            ))}
-          </select>
+          {/* ── Boards over USB ─────────────────────────────────────── */}
+          <div className="mb-1.5 flex items-baseline justify-between">
+            <p className="stat-label">Платы по USB</p>
+            {boards.supported && boards.boards.length > 0 && (
+              <span className="text-[11px] text-faint">подключаются сами</span>
+            )}
+          </div>
 
-          <div className="flex gap-2">
+          {boards.boards.length > 0 && (
+            <ul className="mb-2 space-y-1.5">
+              {boards.boards.map((board) => (
+                <BoardRow
+                  key={board.key}
+                  board={board}
+                  devices={devices}
+                  onBind={(deviceId) => boards.bind(board.key, deviceId)}
+                  onDisconnect={() => boards.disconnect(board.key)}
+                  onOpen={() => board.deviceId && onSelectDevice(board.deviceId)}
+                />
+              ))}
+            </ul>
+          )}
+
+          <button
+            type="button"
+            onClick={() => void connectBoard()}
+            disabled={!boards.supported || connecting}
+            title={
+              boards.supported
+                ? "Выбрать COM-порт платы ESP32-S3"
+                : "Web Serial есть только в Chrome и Edge"
+            }
+            className={`${buttonClass} w-full bg-raised text-ink hover:bg-raised/70`}
+          >
+            {connecting
+              ? "Выбор порта…"
+              : boards.boards.length > 0
+                ? "Подключить ещё плату"
+                : "Подключить плату ESP32"}
+          </button>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-faint">
+            {boards.supported
+              ? "Выбрать порт нужно один раз. Дальше плата подключается сама, как только её воткнули, и находит своё устройство по ID."
+              : "Web Serial есть только в Chrome и Edge."}
+          </p>
+
+          {/* ── The laptop's own sound ─────────────────────────────── */}
+          <div className="mt-4 border-t border-white/[0.06] pt-3">
+            <label className="stat-label mb-1.5 block">Микрофон и файлы → устройство</label>
+            <select
+              value={sensorDeviceId}
+              onChange={(event) => onSensorDeviceChange(event.target.value)}
+              disabled={devices.length === 0}
+              className={`${selectClass} mb-2`}
+            >
+              {devices.length === 0 && <option value="">сначала добавьте устройство</option>}
+              {devices.map((device) => (
+                <option key={device.id} value={device.id}>
+                  {device.name}
+                </option>
+              ))}
+            </select>
+
             <button
               type="button"
               onClick={() => void toggleMic()}
-              className={`flex-1 rounded-xl px-3 py-2.5 text-[13px] font-medium transition-all duration-300 ease-apple active:scale-[0.98] ${
-                mode === "mic" ? "bg-accent text-canvas" : "bg-raised text-ink hover:bg-raised/70"
+              disabled={!target}
+              className={`${buttonClass} w-full ${
+                micOn ? "bg-accent text-canvas" : "bg-raised text-ink hover:bg-raised/70"
               }`}
             >
-              {mode === "mic" ? "Остановить" : "Микрофон"}
-            </button>
-            <button
-              type="button"
-              onClick={() => void toggleSerial()}
-              disabled={!serialSupported}
-              title={
-                serialSupported
-                  ? "Подключить ESP32-S3 по USB"
-                  : "Web Serial есть только в Chrome и Edge"
-              }
-              className={`flex-1 rounded-xl px-3 py-2.5 text-[13px] font-medium transition-all duration-300 ease-apple active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40 ${
-                mode === "serial" ? "bg-accent text-canvas" : "bg-raised text-ink hover:bg-raised/70"
-              }`}
-            >
-              {mode === "serial" ? "Отключить" : "ESP32 по USB"}
+              {micOn ? "Выключить микрофон" : "Микрофон ноутбука"}
             </button>
           </div>
 
@@ -258,14 +397,14 @@ export function SensorPanel({
             </p>
           )}
 
-          {/* Verdict */}
+          {/* ── Verdict for the selected device ─────────────────────── */}
           <div className="mt-3 rounded-xl bg-white/[0.04] p-3">
             <div className="flex items-baseline justify-between gap-3">
-              <span className="text-[17px] font-medium tracking-tightest">
-                {top ? SOUND_CLASS_LABELS[top.name] : "—"}
+              <span className="min-w-0 truncate text-[17px] font-medium tracking-tightest">
+                {live && top ? SOUND_CLASS_LABELS[top.name] : target ? target.name : "—"}
               </span>
               <span className="text-[22px] font-semibold tabular-nums">
-                {top ? `${top.value}%` : "—"}
+                {live && top ? `${top.value}%` : "—"}
               </span>
             </div>
 
@@ -275,7 +414,9 @@ export function SensorPanel({
               </p>
             ) : (
               <p className="mt-1 text-[12px] text-faint">
-                Включите микрофон или проиграйте файл — сайт разберёт звук.
+                {target
+                  ? "Подключите плату, включите микрофон или проиграйте файл — сайт разберёт звук."
+                  : "Добавьте устройство, чтобы было к чему привязать звук."}
               </p>
             )}
 
@@ -305,7 +446,7 @@ export function SensorPanel({
           </div>
 
           {/* All six classes */}
-          {classification && (
+          {live && classification && (
             <ul className="mt-3 space-y-1.5">
               {[...SOUND_CLASSES]
                 .sort((a, b) => classification[b] - classification[a])
@@ -345,7 +486,7 @@ export function SensorPanel({
                     key={sample.file}
                     type="button"
                     onClick={() => void playFile(sample)}
-                    disabled={playing !== null}
+                    disabled={playing !== null || !target}
                     className={`rounded-full px-3 py-1.5 text-[12px] font-medium transition-all duration-300 ease-apple active:scale-95 disabled:opacity-40 ${
                       playing === sample.file
                         ? "bg-accent text-canvas"

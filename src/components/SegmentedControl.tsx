@@ -11,7 +11,8 @@ interface SegmentedControlProps {
 const OPTIONS: { value: DeviceFilter; label: string }[] = [
   { value: "all", label: "Все" },
   { value: "alert", label: "Тревога" },
-  { value: "normal", label: "Норма" },
+  { value: "online", label: "В сети" },
+  { value: "offline", label: "Молчат" },
 ];
 
 /**
@@ -44,7 +45,7 @@ export function SegmentedControl({ value, onChange, counts }: SegmentedControlPr
             role="tab"
             aria-selected={selected}
             onClick={() => onChange(option.value)}
-            className={`relative z-10 flex-1 rounded-full px-3 py-[7px] text-[13px] font-medium transition-colors duration-300 ease-apple ${
+            className={`relative z-10 flex-1 rounded-full px-2 py-[7px] text-[12px] font-medium transition-colors duration-300 ease-apple ${
               selected ? "text-ink" : "text-muted hover:text-ink"
             }`}
           >

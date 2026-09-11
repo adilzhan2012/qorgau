@@ -1,19 +1,20 @@
 import Link from "next/link";
 
-export type ConnectionState = "live" | "connecting" | "offline";
+export type ConnectionState = "live" | "idle";
 
 const CONNECTION: Record<ConnectionState, { label: string; dot: string; pill: string }> = {
-  live: { label: "В эфире", dot: "bg-accent", pill: "bg-accent-soft text-accent" },
-  connecting: { label: "Подключение", dot: "bg-warn", pill: "bg-warn-soft text-warn" },
-  offline: { label: "Нет связи", dot: "bg-alarm", pill: "bg-alarm-soft text-alarm" },
+  live: { label: "В эфире", dot: "bg-accent animate-pulse", pill: "bg-accent-soft text-accent" },
+  idle: { label: "Датчики не подключены", dot: "bg-faint", pill: "bg-white/[0.06] text-muted" },
 };
 
 interface HeaderProps {
   /** Omitted on pages that aren't showing live devices. */
   connection?: ConnectionState;
+  /** Shown after the label, e.g. "2 платы". */
+  detail?: string;
 }
 
-export function Header({ connection }: HeaderProps) {
+export function Header({ connection, detail }: HeaderProps) {
   const state = connection ? CONNECTION[connection] : null;
 
   return (
@@ -54,6 +55,7 @@ export function Header({ connection }: HeaderProps) {
               >
                 <span className={`h-1.5 w-1.5 rounded-full ${state.dot}`} />
                 {state.label}
+                {detail && <span className="hidden opacity-70 sm:inline">· {detail}</span>}
               </span>
             </>
           ) : (
