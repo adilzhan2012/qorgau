@@ -163,13 +163,13 @@ COM1 — Windows плату не видит.
 
 ```
 OK: микрофон работает, слот 0
-{"hello":"qorgau","fw":"1.4","id":"QRG-001","mic":"ok (слот 0)"}
+{"hello":"qorgau","fw":"1.5","id":"QRG-001","mic":"ok (слот 0)"}
 ```
 
 Потом ~15 раз в секунду — признаки звука и вердикт:
 
 ```json
-{"id":"QRG-001","rms":-52.3,"zcr":0.31,"attack":0.02,"harmonic":0.09,"flatness":0.81,"spread":0.94,"top":"nature","conf":87,"danger":false,"bands":[...]}
+{"id":"QRG-001","rms":-52.3,"zcr":0.31,"attack":0.02,"harmonic":0.09,"flatness":0.81,"spread":0.94,"crest":0.21,"centroid":0.48,"tonal":0.37,"flux":0.15,"top":"nature","conf":87,"danger":false,"bands":[...]}
 ```
 
 Хлопните в ладоши — `rms` подскочит. Значит, микрофон живой.
@@ -288,6 +288,8 @@ npm run dev
 | `npm run audio` | пересоздать тестовые звуки в `public/audio/` |
 | `npm run deploy` | опубликовать на GitHub Pages (раздел 10) |
 | `/selftest` на сайте | проверить, что классификатор даёт ожидаемые ответы на всех тестовых звуках |
+| `npm run eval -- --dir corpus` | то же самое на полевых записях: сколько ложных тревог и пропусков |
+| `npm run fw-check` | убедиться, что классификатор платы и сайта — всё ещё одно и то же |
 
 ---
 

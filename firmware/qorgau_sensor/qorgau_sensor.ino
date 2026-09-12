@@ -4,27 +4,37 @@
  *
  * Что делает плата:
  *   1. пишет звук с микрофона на 16 кГц кадрами по 1024 отсчёта (64 мс);
- *   2. считает БПФ и вытаскивает из кадра 6 чисел + 16 полос спектра;
- *   3. САМА решает, что это за звук, и опасен ли он:
+ *   2. считает БПФ и вытаскивает из кадра 10 чисел + 16 полос спектра;
+ *   3. копит последние 24 кадра — полторы секунды — и считает по ним то, чего
+ *      у одного кадра нет: ровность, долю громкого времени, перепад громкости,
+ *      число резких начал. По кадру в 64 мс лай, капля и хлопок неразличимы;
+ *   4. САМА решает, что это за звук, и опасен ли он:
  *        безопасно — природа (листва, ветер, вода), птицы и звери, тишина;
  *        опасно    — лай собаки, машина, бензопила, выстрел;
  *      и показывает это встроенным светодиодом: зелёный / красный;
- *   4. печатает признаки и вердикт одной строкой JSON в USB Serial;
- *   5. представляется по имени (ID) и позволяет сайту это имя поменять;
- *   6. читает GPS и раз в две секунды сообщает, где стоит — сайт сам
+ *   5. печатает признаки и вердикт одной строкой JSON в USB Serial;
+ *   6. представляется по имени (ID) и позволяет сайту это имя поменять;
+ *   7. читает GPS и раз в две секунды сообщает, где стоит — сайт сам
  *      ставит устройство на карту.
  *
- * Классификатор здесь — точная копия src/lib/audio/classify.ts на сайте:
- * те же признаки, те же веса. Сайт считает вердикт и сам (для микрофона
- * ноутбука и файлов), а вердикт платы показывает рядом. В настоящем лесу
- * по LoRa уйдёт именно вердикт платы — несколько байт.
+ * Классификатор здесь — точная копия src/lib/audio/window.ts и classify.ts на
+ * сайте: те же признаки, те же веса, те же пороги. Сайт считает вердикт и сам
+ * (для микрофона ноутбука и файлов), а вердикт платы показывает рядом. В
+ * настоящем лесу по LoRa уйдёт именно вердикт платы — несколько байт.
+ *
+ * Что копия остаётся копией, проверяется машиной, а не глазами: `npm run
+ * fw-check` вырезает из этого файла кусок между метками «ОБЩЕЕ С САЙТОМ»,
+ * собирает его обычным g++ и сравнивает вердикты с браузерными на трёхстах
+ * случайных наборах признаков.
  *
  * ID хранится во флеше платы. Прошивать под каждую точку не нужно: на сайте
  * открываете устройство → «Записать ID в плату», и плата с тех пор сама
  * находит своё место на карте на любом ноутбуке.
  *
  * Если правите пороги — правьте в обоих местах, иначе плата и сайт
- * разойдутся во мнениях. Страница /selftest проверяет версию сайта.
+ * разойдутся во мнениях. Пороги подобраны не на слух: они измерены на корпусе
+ * полевых записей (`npm run corpus`, затем `npm run eval`), и менять их стоит
+ * тоже по нему — иначе легко починить один звук и сломать пять.
  *
  * ВАЖНО про Arduino UNO: подключить к нему INMP441 нельзя. У ATmega328P нет
  * блока I2S, всего 2 КБ ОЗУ и 16 МГц — БПФ на 1024 точки туда не поместится.
@@ -69,7 +79,7 @@
  *
  * ── Что печатает плата ─────────────────────────────────────────────
  *   {"hello":"qorgau","fw":"1.2","id":"QRG-001","mic":"ok"}   при старте и по запросу
- *   {"id":"QRG-001","rms":-52.3,...,"top":"nature","conf":87,"danger":false,"bands":[...]}
+ *   {"id":"QRG-001","rms":-52.3,...,"crest":0.12,...,"top":"nature","conf":87,"danger":false,"bands":[...]}
  *                                                                ~15 раз в секунду
  *   {"gps":{"fix":true,"lat":43.05613,"lng":76.98481,"sats":7,"hdop":1.1,"alt":1650}}
  *   {"gps":{"fix":false,"sats":2}}                              раз в 2 секунды
@@ -87,7 +97,7 @@
 
 // ─────────────────────────── Настройки ───────────────────────────
 
-#define FW_VERSION  "1.4"
+#define FW_VERSION  "1.5"
 #define DEFAULT_ID  "QRG-001"   // ID до того, как сайт запишет свой
 #define PIN_BCLK    4           // SCK на модуле микрофона
 #define PIN_LRCL    5           // WS
@@ -164,7 +174,8 @@ static int  cmdLen = 0;
 static int      lastTop = 6;          // CLS_OTHER
 static int      lastConf = 0;
 static bool     lastDanger = false;
-static int      dangerStreak = 0;     // подряд кадров с опасным вердиктом
+static int      dangerStreak = 0;     // подряд кадров с ОДНИМ И ТЕМ ЖЕ опасным вердиктом
+static int      dangerVote = -1;      // какой это класс (-1 — опасного голоса нет)
 static uint32_t dangerUntilMs = 0;    // пока не прошло — светим красным
 
 // GPS: последнее, что сказал модуль.
@@ -253,11 +264,24 @@ static float computeZcr(const float *x, int n) {
  * лая пик будет, у выстрела — нет, там шум.
  * Шаг по задержке 2 вместо 1 — вдвое дешевле, на результат почти не влияет.
  */
+/**
+ * Высота тона: насколько кадр повторяет сам себя на периоде 60–600 Гц.
+ *
+ * Копия harmonicity() из src/lib/audio/features.ts, вместе с двумя её
+ * тонкостями, без которых признак врёт:
+ *   1. задержка обязана быть локальным максимумом — у любого плавного шума
+ *      автокорреляция просто спадает от первой задержки, и порыв ветра
+ *      получался «тональным» не хуже двигателя;
+ *   2. считается не высота пика, а насколько он выше средней корреляции:
+ *      периодический звук возвращается к себе и снова уходит, а шум немножко
+ *      похож на себя при любом сдвиге.
+ */
 static float computeHarmonic(const float *x, int n) {
+  const int step = 2;   // шаг по задержкам: вдвое меньше работы, та же картина
   int minLag = SAMPLE_RATE / 600;
   int maxLag = SAMPLE_RATE / 60;
   if (maxLag > n / 2) maxLag = n / 2;
-  if (maxLag <= minLag) return 0.0f;
+  if (maxLag <= minLag + 2 * step) return 0.0f;
 
   float mean = 0.0f;
   for (int i = 0; i < n; i++) mean += x[i];
@@ -270,22 +294,35 @@ static float computeHarmonic(const float *x, int n) {
   }
   if (energy <= 1e-9f) return 0.0f;
 
-  float best = 0.0f;
-  for (int lag = minLag; lag <= maxLag; lag += 2) {
+  // Корреляции считаем в буфер: локальный максимум иначе не найти.
+  const int slots = (maxLag - minLag) / step + 1;
+  static float corr[512];
+  if (slots > (int)(sizeof(corr) / sizeof(corr[0]))) return 0.0f;
+
+  for (int k = 0; k < slots; k++) {
+    int lag = minLag + k * step;
     float acc = 0.0f, norm = 0.0f;
     for (int i = 0; i + lag < n; i++) {
       float a = x[i] - mean;
       acc += a * (x[i + lag] - mean);
       norm += a * a;
     }
-    if (norm <= 1e-9f) continue;
-    float r = acc / norm;
-    if (r > best) best = r;
+    corr[k] = norm > 1e-9f ? acc / norm : 0.0f;
   }
-  return clamp01(best);
+
+  float peak = 0.0f, average = 0.0f;
+  for (int k = 0; k < slots; k++) average += fabsf(corr[k]);
+  average /= (float)slots;
+
+  for (int k = 1; k < slots - 1; k++) {
+    if (corr[k] > peak && corr[k] >= corr[k - 1] && corr[k] >= corr[k + 1]) peak = corr[k];
+  }
+
+  float headroom = 1.0f - average;
+  if (headroom < 0.15f) headroom = 0.15f;
+  return clamp01((peak - average) / headroom);
 }
 
-/** Спектральная плоскостность: 1 — белый шум, 0 — чистый тон. */
 static float computeFlatness() {
   float logSum = 0.0f, sum = 0.0f;
   int count = 0;
@@ -326,6 +363,56 @@ static void computeBands() {
   } else {
     for (int b = 0; b < BAND_COUNT; b++) bands[b] /= total;
   }
+}
+
+/**
+ * Пик к среднему по форме волны, 0..1 на шкале 6–24 дБ. Синус даёт 3 дБ,
+ * белый шум ~12, хлопок — за 20. Одно число, которое говорит «всплеск на
+ * тишине», не заглядывая в спектр.
+ */
+static float computeCrest(const float *x, int n) {
+  float peak = 0.0f, sum = 0.0f;
+  for (int i = 0; i < n; i++) {
+    float v = fabsf(x[i]);
+    if (v > peak) peak = v;
+    sum += x[i] * x[i];
+  }
+  float rms = sqrtf(sum / (float)(n > 0 ? n : 1));
+  if (rms <= 1e-7f || peak <= 1e-7f) return 0.0f;
+  return clamp01((20.0f * log10f(peak / rms) - 6.0f) / 18.0f);
+}
+
+/** Центр тяжести спектра по шкале полос, 0..1: гул ~0.1, свист птицы ~0.9. */
+static float computeCentroid() {
+  float weighted = 0.0f, total = 0.0f;
+  for (int b = 0; b < BAND_COUNT; b++) {
+    weighted += (float)b * bands[b];
+    total += bands[b];
+  }
+  if (total <= 1e-9f) return 0.0f;
+  return clamp01(weighted / total / (float)(BAND_COUNT - 1));
+}
+
+/** Насколько самая громкая частота выше средней, 0..1 на шкале 0–60 дБ. */
+static float computeTonal() {
+  float peak = 0.0f, sum = 0.0f;
+  int count = 0;
+  for (int i = 2; i < FFT_SIZE / 2; i++) {
+    float v = spectrum[i];
+    if (v > peak) peak = v;
+    sum += v;
+    count++;
+  }
+  if (count == 0 || sum <= 1e-9f || peak <= 1e-9f) return 0.0f;
+  return clamp01((20.0f * log10f(peak / (sum / (float)count))) / 60.0f);
+}
+
+/** Насколько сдвинулась ФОРМА спектра с прошлого кадра, 0..1. */
+static float computeFlux(const float *previous, bool havePrevious) {
+  if (!havePrevious) return 0.0f;
+  float sum = 0.0f;
+  for (int b = 0; b < BAND_COUNT; b++) sum += fabsf(bands[b] - previous[b]);
+  return clamp01(sum / 2.0f);
 }
 
 // ────────────────────────── Настройка ─────────────────────────────
@@ -597,10 +684,177 @@ static void pollCommands() {
   }
 }
 
+// <<< ОБЩЕЕ С САЙТОМ: window.ts + classify.ts — начало >>>
+// Всё между этими метками — построчный перевод двух файлов сайта. Скрипт
+// npm run fw-check вырезает этот кусок, собирает его обычным g++ и сравнивает
+// вердикты с браузерной версией на случайных входах. Метки не трогайте.
+
+// ──────────────────── Окно в полторы секунды ──────────────────────
+// Копия src/lib/audio/window.ts. Решение принимается не по кадру в 64 мс —
+// за такое время лай, капля и хлопок неразличимы, — а по последним двадцати
+// четырём кадрам. Оттуда берутся признаки, которых у кадра нет: ровность,
+// доля громкого времени, перепад громкости, число резких начал.
+
+#define WIN_FRAMES 24
+static const float FRAME_SECONDS = 0.064f;
+
+static float winRms[WIN_FRAMES];
+static float winZcr[WIN_FRAMES];
+static float winHarm[WIN_FRAMES];
+static float winFlat[WIN_FRAMES];
+static float winSpread[WIN_FRAMES];
+static float winCentroid[WIN_FRAMES];
+static float winTonal[WIN_FRAMES];
+static float winCrest[WIN_FRAMES];
+static float winFlux[WIN_FRAMES];
+static float winBands[WIN_FRAMES][BAND_COUNT];
+static int   winCount = 0;   // сколько кадров накоплено, не больше WIN_FRAMES
+static int   winHead  = 0;   // куда писать следующий кадр
+
+typedef struct {
+  float seconds, rms, peak, floorDb, levelSpan, duty, onsets, attack, steady;
+  float bands[BAND_COUNT], bandPeak;
+  float zcr, harmonic, flatness, spread, centroid, tonal, crest;
+} Window;
+
+static Window win;
+
+static void windowPush(float rms, float zcr, float harmonic, float flatness, float spread,
+                       float centroid, float tonal, float crest, float flux) {
+  winRms[winHead] = rms;
+  winZcr[winHead] = zcr;
+  winHarm[winHead] = harmonic;
+  winFlat[winHead] = flatness;
+  winSpread[winHead] = spread;
+  winCentroid[winHead] = centroid;
+  winTonal[winHead] = tonal;
+  winCrest[winHead] = crest;
+  winFlux[winHead] = flux;
+  for (int b = 0; b < BAND_COUNT; b++) winBands[winHead][b] = bands[b];
+
+  winHead = (winHead + 1) % WIN_FRAMES;
+  if (winCount < WIN_FRAMES) winCount++;
+}
+
+/** Индекс i-го по счёту кадра окна (0 — самый старый). */
+static inline int winAt(int i) {
+  return (winHead - winCount + i + 2 * WIN_FRAMES) % WIN_FRAMES;
+}
+
+/** Признаки всего окна. Порядок вычислений — как в summarise() на сайте. */
+static void windowSummarise() {
+  int n = winCount;
+  if (n == 0) return;
+
+  float peak = -1000.0f;
+  for (int i = 0; i < n; i++) {
+    float db = winRms[winAt(i)];
+    if (db > peak) peak = db;
+  }
+
+  // Фон окна — двадцатый перцентиль уровня: сортируем копию, благо их 24.
+  float sorted[WIN_FRAMES];
+  for (int i = 0; i < n; i++) sorted[i] = winRms[winAt(i)];
+  for (int i = 1; i < n; i++) {
+    float v = sorted[i];
+    int j = i - 1;
+    while (j >= 0 && sorted[j] > v) { sorted[j + 1] = sorted[j]; j--; }
+    sorted[j + 1] = v;
+  }
+  int floorIndex = (int)lroundf(0.2f * (float)(n - 1));
+  float floorDb = sorted[floorIndex];
+
+  // Вес кадра — его энергия: паузы между выкриками не должны размазывать
+  // спектр лая в шум, хотя занимают больше времени, чем сам лай.
+  float weights[WIN_FRAMES], totalWeight = 0.0f;
+  for (int i = 0; i < n; i++) {
+    weights[i] = powf(10.0f, winRms[winAt(i)] / 10.0f);
+    totalWeight += weights[i];
+  }
+  if (totalWeight <= 0.0f) totalWeight = 1.0f;
+
+  float zcr = 0, harm = 0, flat = 0, spread = 0, centroid = 0, tonal = 0, flux = 0;
+  for (int b = 0; b < BAND_COUNT; b++) win.bands[b] = 0.0f;
+  for (int i = 0; i < n; i++) {
+    int k = winAt(i);
+    float w = weights[i];
+    zcr += winZcr[k] * w;
+    harm += winHarm[k] * w;
+    flat += winFlat[k] * w;
+    spread += winSpread[k] * w;
+    centroid += winCentroid[k] * w;
+    tonal += winTonal[k] * w;
+    flux += winFlux[k] * w;
+    for (int b = 0; b < BAND_COUNT; b++) win.bands[b] += winBands[k][b] * w;
+  }
+
+  float bandTotal = 0.0f;
+  for (int b = 0; b < BAND_COUNT; b++) bandTotal += win.bands[b];
+  if (bandTotal <= 1e-9f) bandTotal = 1.0f;
+  win.bandPeak = 0.0f;
+  for (int b = 0; b < BAND_COUNT; b++) {
+    win.bands[b] /= bandTotal;
+    if (win.bands[b] > win.bandPeak) win.bandPeak = win.bands[b];
+  }
+
+  // Подъём громкости считаем по самому окну: у отдельного кадра память
+  // короткая, и в записи, которая начинается сразу с лая, первым кадрам
+  // просто не с чем сравнивать.
+  int loudEnough = 0, onsetCount = 0;
+  float steepest = 0.0f;
+  for (int i = 0; i < n; i++) {
+    float db = winRms[winAt(i)];
+    if (db > peak - 12.0f) loudEnough++;
+    if (i == 0) continue;
+    float before = winRms[winAt(i - 1)];
+    for (int back = 2; back <= 4 && i - back >= 0; back++) {
+      float earlier = winRms[winAt(i - back)];
+      if (earlier < before) before = earlier;
+    }
+    float rise = db - before;
+    if (rise > steepest) steepest = rise;
+    if (rise > 10.0f && db > floorDb + 8.0f) onsetCount++;
+  }
+
+  float seconds = (float)n * FRAME_SECONDS;
+  win.seconds = seconds;
+  win.rms = 10.0f * log10f(totalWeight / (float)n);
+  win.peak = peak;
+  win.floorDb = floorDb;
+  win.levelSpan = clamp01((peak - floorDb) / 30.0f);
+  win.duty = (float)loudEnough / (float)n;
+  win.onsets = clamp01((float)onsetCount / seconds / 5.0f);
+  win.attack = clamp01(steepest / 24.0f);
+  win.steady = clamp01(1.0f - (flux / totalWeight) * 3.0f);
+  win.zcr = zcr / totalWeight;
+  win.harmonic = harm / totalWeight;
+  win.flatness = flat / totalWeight;
+  win.spread = spread / totalWeight;
+  win.centroid = centroid / totalWeight;
+  win.tonal = tonal / totalWeight;
+
+  // Пик к среднему берём у самого громкого кадра, а не максимальный: у кадра,
+  // на границу которого попал край звука, он всегда огромен.
+  int loudest = winAt(0);
+  for (int i = 1; i < n; i++) {
+    int k = winAt(i);
+    if (winRms[k] > winRms[loudest]) loudest = k;
+  }
+  win.crest = winCrest[loudest];
+}
+
 // ──────────────────────── Классификатор ───────────────────────────
-// Копия src/lib/audio/classify.ts. Каждый класс — взвешенное среднее
-// нескольких признаков, затем softmax. Никаких нейросетей: каждый вердикт
-// можно объяснить тем, какой признак его вытянул.
+// Копия src/lib/audio/classify.ts. Каждый класс — несколько акустических
+// признаков с весами, затем softmax. Никаких нейросетей: каждый вердикт можно
+// объяснить тем, какой признак его вытянул.
+//
+// Признаки бывают двух видов: обычные складываются во взвешенное среднее, а
+// обязательные (gates) его умножают. Бензопила без непрерывного звука
+// невозможна, сколько бы ни совпало остального, — это и есть gate.
+//
+// Пороги здесь — не на глаз: это квартили, измеренные на корпусе полевых
+// записей (npm run corpus, затем npm run eval). Правите порог — правьте в
+// обоих местах и перегоняйте проверку, иначе плата и сайт разойдутся.
 
 enum { CLS_NATURE, CLS_ANIMAL, CLS_DOG, CLS_VEHICLE, CLS_CHAINSAW, CLS_GUNSHOT, CLS_OTHER, CLS_COUNT };
 static const char *CLS_NAME[CLS_COUNT]  = {"nature", "animal", "dog", "vehicle", "chainsaw", "gunshot", "other"};
@@ -608,13 +862,18 @@ static const bool  CLS_DANGER[CLS_COUNT] = {false, false, true, true, true, true
 
 static const float CLS_SILENCE_DB  = -58.0f;   // тише — это фон, а не событие
 static const float CLS_TEMPERATURE = 0.15f;    // softmax: меньше — решительнее
-static const int   CLS_ALERT_PCT   = 40;       // уверенность, с которой опасный класс — тревога
+static const int   CLS_ALERT_PCT   = 45;       // уверенность, с которой опасный класс — тревога
 static const uint32_t DANGER_HOLD_MS = 8000;   // выстрел длится 200 мс; красный держим дольше
+
+/** Сколько кадров подряд должны сказать одно и то же, чтобы это была тревога. */
+static const int CLS_CONFIRM[CLS_COUNT] = {0, 0, 5, 8, 8, 4, 0};
+/** И сколько секунд звука должно накопиться в окне, прежде чем класс считается. */
+static const float CLS_EVIDENCE[CLS_COUNT] = {0.0f, 0.0f, 0.5f, 1.0f, 1.0f, 0.25f, 0.0f};
 
 /** Сумма полос [from, to) — доля энергии в этом диапазоне, 0..1. */
 static float bandSum(int from, int to) {
   float sum = 0.0f;
-  for (int i = from; i < to && i < BAND_COUNT; i++) sum += bands[i];
+  for (int i = from; i < to && i < BAND_COUNT; i++) sum += win.bands[i];
   return clamp01(sum);
 }
 
@@ -624,65 +883,149 @@ static float gaussf(float x, float mu, float sigma) {
   return expf(-0.5f * d * d);
 }
 
-/** Взвешенное среднее clamp01(v[i]) с весами w[i]. */
-static float wavg(const float *w, const float *v, int n) {
-  float sum = 0.0f, total = 0.0f;
-  for (int i = 0; i < n; i++) { sum += w[i] * clamp01(v[i]); total += w[i]; }
-  return total > 0.0f ? sum / total : 0.0f;
+/** Линейная шкала: 0 при lo, 1 при hi. */
+static float rampf(float x, float lo, float hi) {
+  return clamp01((x - lo) / (hi - lo));
 }
 
-static void classifyFrame(float rms, float zcr, float attack, float harmonic,
-                          float flatness, float spread) {
-  float loud   = clamp01((rms - CLS_SILENCE_DB) / (-12.0f - CLS_SILENCE_DB));
-  float rumble = bandSum(0, 4);    //   60 –  204 Гц  гул двигателя
-  float body   = bandSum(2, 10);   //  110 – 1277 Гц  бензопила
-  float bark   = bandSum(6, 12);   //  376 – 2353 Гц  форманты лая
-  float bright = bandSum(10, 16);  // 1277 – 8000 Гц  птицы, шипение, треск
+/**
+ * Взвешенное среднее обычных признаков, умноженное на обязательные.
+ * Провалившийся gate оставляет классу десятую часть — не ноль, чтобы вердикт
+ * оставался сравнением, а не запретом.
+ */
+static float classScore(const float *w, const float *v, int n, const float *gates, int gn) {
+  float sum = 0.0f, total = 0.0f;
+  for (int i = 0; i < n; i++) { sum += w[i] * clamp01(v[i]); total += w[i]; }
+  float score = total > 0.0f ? sum / total : 0.5f;
+  for (int i = 0; i < gn; i++) score *= 0.1f + 0.9f * clamp01(gates[i]);
+  return score;
+}
+
+static void classifyWindow() {
+  float loud   = rampf(win.rms, -45.0f, -12.0f);
+  float deepLow = bandSum(0, 3);    //   60 –  150 Гц  гул двигателя
+  float body    = bandSum(3, 11);   //  150 – 1700 Гц  корпус бензопилы
+  float mid     = bandSum(6, 13);   //  380 – 3200 Гц  форманты лая
+  float high    = bandSum(10, 16);  //  1.3 –    8 кГц птицы, стрёкот, шипение
 
   float score[CLS_COUNT];
   {
-    // Природа: ровный широкополосный шум. Признаки шума нарочно «крутые»:
-    // бензопила наполовину шум и наполовину тон, мягкое 1-x отдало бы ей треть.
-    const float w[] = {3.0f, 3.0f, 2.5f, 1.5f};
-    const float v[] = {1.0f - attack, (flatness - 0.4f) / 0.4f, 1.0f - harmonic * 1.5f, spread};
-    score[CLS_NATURE] = wavg(w, v, 4);
+    // Природа: звук, который просто идёт и идёт. Обязательных условий нет —
+    // это класс по умолчанию: когда ничто другое не подошло, в лесу шумит лес.
+    // Зато есть терм «это не мотор»: ровный звук с высотой тона издаёт
+    // механизм, и без этого терма природа выигрывала у бензопилы.
+    const float w[] = {3.0f, 3.0f, 2.5f, 2.5f, 3.0f, 2.0f, 2.0f, 3.0f};
+    const float v[] = {
+      rampf(win.duty, 0.5f, 0.9f),
+      1.0f - rampf(win.onsets, 0.12f, 0.5f),
+      1.0f - rampf(win.levelSpan, 0.2f, 0.6f),
+      1.0f - rampf(win.harmonic, 0.25f, 0.55f),
+      1.0f - rampf(win.harmonic, 0.25f, 0.55f) * rampf(win.steady, 0.3f, 0.7f),
+      rampf(win.spread, 0.7f, 0.9f),
+      1.0f - rampf(win.bandPeak, 0.2f, 0.45f),
+      1.0f - rampf(deepLow, 0.2f, 0.42f),
+    };
+    score[CLS_NATURE] = classScore(w, v, 8, NULL, 0);
   }
   {
-    const float w[] = {3.0f, 1.5f, 1.5f, 1.0f};
-    const float v[] = {bright, 1.0f - flatness, 1.0f - spread, harmonic};
-    score[CLS_ANIMAL] = wavg(w, v, 4);
+    // Птицы и стрёкот: энергия высоко и собрана в узкие пики.
+    const float w[] = {3.0f, 2.5f, 2.0f, 2.5f, 2.0f, 1.5f};
+    const float v[] = {
+      rampf(win.bandPeak, 0.15f, 0.35f),
+      rampf(high, 0.18f, 0.4f),
+      rampf(win.zcr, 0.08f, 0.25f),
+      1.0f - rampf(win.levelSpan, 0.5f, 0.9f),
+      rampf(win.tonal, 0.3f, 0.5f),
+      1.0f - rampf(deepLow, 0.15f, 0.35f),
+    };
+    const float g[] = {rampf(win.centroid, 0.42f, 0.62f)};
+    score[CLS_ANIMAL] = classScore(w, v, 6, g, 1);
   }
   {
-    const float w[] = {3.0f, 1.5f, 2.5f, 1.0f};
-    const float v[] = {bark, gaussf(attack, 0.75f, 0.35f), harmonic, gaussf(flatness, 0.3f, 0.25f)};
-    score[CLS_DOG] = wavg(w, v, 4);
+    // Лай: отдельные выкрики с паузами, каждый много громче фона и голосом,
+    // а не щелчком. Похожи кудахтанье и капель, поэтому условий сразу четыре.
+    const float w[] = {2.5f, 2.0f, 1.5f};
+    const float v[] = {
+      rampf(mid, 0.3f, 0.5f),
+      gaussf(win.centroid, 0.48f, 0.14f),
+      rampf(win.harmonic, 0.25f, 0.6f),
+    };
+    const float g[] = {
+      1.0f - rampf(win.duty, 0.4f, 0.75f),
+      rampf(win.onsets, 0.2f, 0.6f),
+      rampf(win.levelSpan, 0.5f, 0.9f),
+      1.0f - rampf(win.crest, 0.1f, 0.3f),
+    };
+    score[CLS_DOG] = classScore(w, v, 3, g, 4);
   }
   {
-    const float w[] = {3.5f, 1.5f, 1.5f, 1.0f};
-    const float v[] = {rumble, 1.0f - zcr * 5.0f, 1.0f - attack, harmonic};
-    score[CLS_VEHICLE] = wavg(w, v, 4);
+    // Двигатель: гул на самых низах, который не меняется. Ветер отсекается
+    // тем, что его энергия сидит выше 150 Гц, костёр — тем, что он трещит.
+    const float w[] = {3.0f, 2.5f, 2.5f, 1.5f};
+    const float v[] = {
+      1.0f - rampf(win.levelSpan, 0.1f, 0.4f),
+      rampf(win.steady, 0.35f, 0.7f),
+      gaussf(win.centroid, 0.3f, 0.14f),
+      1.0f - rampf(win.zcr, 0.04f, 0.18f),
+    };
+    const float g[] = {
+      rampf(deepLow, 0.22f, 0.38f),
+      rampf(win.duty, 0.75f, 0.95f),
+      1.0f - rampf(win.onsets, 0.1f, 0.5f),
+      1.0f - rampf(win.crest, 0.2f, 0.45f),
+    };
+    score[CLS_VEHICLE] = classScore(w, v, 4, g, 4);
   }
   {
-    const float w[] = {2.5f, 2.0f, 1.5f, 1.5f};
-    const float v[] = {body, harmonic, 1.0f - attack, gaussf(spread, 0.72f, 0.22f)};
-    score[CLS_CHAINSAW] = wavg(w, v, 4);
+    // Бензопила: непрерывный мотор, но выше по спектру, чем машина, и с
+    // выраженной высотой тона — пила визжит. Высота тона и отделяет её от
+    // ветра и дождя, которые тоже непрерывны и тоже шумят.
+    const float w[] = {2.5f, 2.0f, 2.0f, 2.0f, 1.5f};
+    const float v[] = {
+      rampf(body, 0.35f, 0.55f),
+      gaussf(win.flatness, 0.5f, 0.18f),
+      gaussf(win.centroid, 0.45f, 0.14f),
+      loud,
+      1.0f - rampf(deepLow, 0.25f, 0.45f),
+    };
+    const float g[] = {
+      rampf(win.duty, 0.75f, 0.95f),
+      1.0f - rampf(win.onsets, 0.1f, 0.5f),
+      rampf(win.harmonic, 0.22f, 0.42f),
+      rampf(win.steady, 0.3f, 0.6f),
+    };
+    score[CLS_CHAINSAW] = classScore(w, v, 5, g, 4);
   }
   {
-    const float w[] = {3.0f, 2.5f, 2.0f, 3.0f, 1.0f};
-    const float v[] = {attack, flatness, spread, 1.0f - harmonic, loud};
-    score[CLS_GUNSHOT] = wavg(w, v, 5);
+    // Выстрел: одиночный хлопок. Всё окно — тишина, в которой один-два кадра
+    // взлетают на два десятка децибел и тут же гаснут.
+    const float w[] = {2.5f, 2.0f, 2.0f, 2.0f, 1.5f};
+    const float v[] = {
+      1.0f - rampf(win.duty, 0.15f, 0.6f),
+      rampf(win.crest, 0.15f, 0.45f),
+      rampf(win.flatness, 0.2f, 0.5f),
+      rampf(win.spread, 0.78f, 0.92f),
+      1.0f - rampf(win.centroid, 0.45f, 0.7f),
+    };
+    const float g[] = {
+      rampf(win.attack, 0.6f, 0.95f),
+      1.0f - rampf(win.duty, 0.45f, 0.8f),
+      rampf(win.levelSpan, 0.45f, 0.8f),
+      1.0f - rampf(win.harmonic, 0.3f, 0.6f),
+    };
+    score[CLS_GUNSHOT] = classScore(w, v, 5, g, 4);
   }
   {
-    // Постоянный «пол», чтобы никому не приходилось выигрывать по умолчанию,
-    // плюс явная награда за тишину.
-    const float w[] = {2.2f, 2.5f};
-    const float v[] = {0.5f, 1.0f - loud};
-    score[CLS_OTHER] = wavg(w, v, 2);
+    // Фон: постоянный небольшой уровень, награда за тишину и требование,
+    // чтобы ничего не происходило.
+    const float w[] = {2.5f, 2.0f, 3.0f};
+    const float v[] = {1.0f - rampf(win.levelSpan, 0.35f, 0.75f), 0.42f, 1.0f - loud};
+    score[CLS_OTHER] = classScore(w, v, 3, NULL, 0);
   }
 
-  // Тише порога — это фон. Так и говорим, а не гадаем.
-  if (rms < CLS_SILENCE_DB) {
-    for (int i = 0; i < CLS_COUNT; i++) score[i] = (i == CLS_OTHER) ? 1.0f : score[i] * 0.25f;
+  // Тише порога — это фон парка. Так и говорим, а не гадаем.
+  if (win.rms < CLS_SILENCE_DB) {
+    for (int i = 0; i < CLS_COUNT; i++) score[i] = (i == CLS_OTHER) ? 1.0f : score[i] * 0.2f;
   }
 
   float maxScore = score[0];
@@ -697,15 +1040,20 @@ static void classifyFrame(float rms, float zcr, float attack, float harmonic,
   lastTop = top;
   lastConf = (int)lroundf(e[top] / sum * 100.0f);
 
-  // Один кадр — это 64 мс. Выстрел, лай, двигатель тянутся на несколько;
-  // один громкий кадр — это щелчок, дверь, птица, начавшая петь посреди
-  // кадра. Тревога — только когда два кадра подряд говорят одно и то же
-  // (или она уже держится). Сайт применяет то же правило.
-  bool vote = CLS_DANGER[top] && lastConf >= CLS_ALERT_PCT;
-  dangerStreak = vote ? dangerStreak + 1 : 0;
-  lastDanger = vote && (dangerStreak >= 2 || millis() < dangerUntilMs);
+  // Тревога — только когда один и тот же опасный класс продержался положенное
+  // число кадров подряд (или она уже горит). Кадр — 64 мс, так что четыре
+  // кадра это четверть секунды. Одиночный дрогнувший кадр и есть большая
+  // часть ложных тревог. Сайт применяет то же правило.
+  bool vote = CLS_DANGER[top] && lastConf >= CLS_ALERT_PCT && win.seconds >= CLS_EVIDENCE[top];
+  if (vote && top == dangerVote) dangerStreak++;
+  else dangerStreak = vote ? 1 : 0;
+  dangerVote = vote ? top : -1;
+
+  lastDanger = vote && (dangerStreak >= CLS_CONFIRM[top] || millis() < dangerUntilMs);
   if (lastDanger) dangerUntilMs = millis() + DANGER_HOLD_MS;
 }
+
+// <<< ОБЩЕЕ С САЙТОМ: конец >>>
 
 // ─────────────────────────── Светодиод ────────────────────────────
 
@@ -924,20 +1272,35 @@ void loop() {
     spectrum[i] = sqrtf(fftRe[i] * fftRe[i] + fftIm[i] * fftIm[i]);
   }
 
+  // Форма спектра прошлого кадра нужна, чтобы измерить, насколько она
+  // сдвинулась: из этого получается «ровность» окна.
+  static float previousBands[BAND_COUNT];
+  static bool havePreviousBands = false;
+
   computeBands();
   float flatness = computeFlatness();
   float spread = computeSpread();
+  float centroid = computeCentroid();
+  float tonal = computeTonal();
+  float crest = computeCrest(frame, FRAME_LEN);
+  float flux = computeFlux(previousBands, havePreviousBands);
+  for (int b = 0; b < BAND_COUNT; b++) previousBands[b] = bands[b];
+  havePreviousBands = true;
 
-  classifyFrame(rms, zcr, attack, harmonic, flatness, spread);
+  windowPush(rms, zcr, harmonic, flatness, spread, centroid, tonal, crest, flux);
+  windowSummarise();
+  classifyWindow();
   updateLed();
   if (!printFrame) return;
 
   // ── одна строка JSON ──
-  char line[512];
+  char line[640];
   int n = snprintf(line, sizeof(line),
       "{\"id\":\"%s\",\"rms\":%.1f,\"zcr\":%.3f,\"attack\":%.3f,"
-      "\"harmonic\":%.3f,\"flatness\":%.3f,\"spread\":%.3f,",
-      deviceId, rms, zcr, attack, harmonic, flatness, spread);
+      "\"harmonic\":%.3f,\"flatness\":%.3f,\"spread\":%.3f,"
+      "\"crest\":%.3f,\"centroid\":%.3f,\"tonal\":%.3f,\"flux\":%.3f,",
+      deviceId, rms, zcr, attack, harmonic, flatness, spread,
+      crest, centroid, tonal, flux);
   if (batteryPct >= 0) {
     n += snprintf(line + n, sizeof(line) - n, "\"bat\":%d,", batteryPct);
   }

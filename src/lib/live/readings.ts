@@ -1,5 +1,6 @@
 import { classify, explain, isAlertClass } from "@/lib/audio/classify";
 import type { Features } from "@/lib/audio/features";
+import type { WindowFeatures } from "@/lib/audio/window";
 import {
   SOUND_CLASS_LABELS,
   topSoundClass,
@@ -42,21 +43,57 @@ export interface LiveReading {
   alertUntil: number;
   /**
    * The dangerous class this one frame voted for, confirmed or not. An alert
-   * needs two frames in a row: see `mergeReading`.
+   * needs the same vote several frames running: see `mergeReading`.
    */
   candidate: SoundClass | null;
+  /** How many frames in a row have now voted for this same dangerous class. */
+  streak: number;
 }
 
 /** A gunshot lasts 200 ms. Hold the alert long enough to be seen. */
 export const ALERT_HOLD_MS = 8000;
 
-
-
 /**
  * An alert needs a confident verdict, not merely a winning one — otherwise
  * room tone leaning 22% chainsaw would light up the map.
  */
-const ALERT_THRESHOLD = 40;
+const ALERT_THRESHOLD = 45;
+
+/**
+ * How many frames in a row have to agree before a verdict becomes an alert.
+ * A frame is 64 ms, so four frames is a quarter of a second.
+ *
+ * The window already smooths the features, but the verdict can still flicker
+ * for a single frame on the boundary where two classes come out nearly equal.
+ * A single flickering frame is most of what a false alarm is made of, and
+ * insisting on a steady one costs exactly these few frames of delay.
+ */
+const CONFIRM_FRAMES: Record<SoundClass, number> = {
+  chainsaw: 8,
+  vehicle: 8,
+  dog: 5,
+  gunshot: 4,
+  nature: 0,
+  animal: 0,
+  other: 0,
+};
+
+/**
+ * How much sound has to be in the window before a class may raise an alarm at
+ * all. A saw and an engine last by their nature: under a second of them is not
+ * yet them, it is the beginning of something. A shot lasts 200 ms and cannot
+ * wait that long — but it is also the easiest to confirm, being the only one
+ * that loud that briefly.
+ */
+const EVIDENCE_SECONDS: Record<SoundClass, number> = {
+  chainsaw: 1.0,
+  vehicle: 1.0,
+  dog: 0.5,
+  gunshot: 0.25,
+  nature: 0,
+  animal: 0,
+  other: 0,
+};
 
 /** What the board decided on its own, when its firmware classifies. */
 export interface BoardOpinion {
@@ -76,11 +113,12 @@ export function makeReading(
   deviceId: string,
   source: ReadingSource,
   features: Features,
+  window: WindowFeatures,
   battery: number | null = null,
   board: BoardOpinion | null = null,
   at: number = Date.now(),
 ): LiveReading {
-  const classification = classify(features);
+  const classification = classify(window);
   const top = topSoundClass(classification);
 
   // topSoundClass only returns null for a null classification, which classify()
@@ -101,10 +139,14 @@ export function makeReading(
       battery,
       alertUntil: 0,
       candidate: null,
+      streak: 0,
     };
   }
 
-  const ownAlert = isAlertClass(top.name) && top.value >= ALERT_THRESHOLD;
+  const ownAlert =
+    isAlertClass(top.name) &&
+    top.value >= ALERT_THRESHOLD &&
+    window.seconds >= EVIDENCE_SECONDS[top.name];
   const boardAlert = board !== null && board.danger && isAlertClass(board.top);
   const alerting = ownAlert || boardAlert;
 
@@ -121,13 +163,14 @@ export function makeReading(
     // Provisional: `mergeReading` promotes it to an alert once a second frame agrees.
     status: "online",
     soundType: null,
-    reasons: explain(features, verdict),
+    reasons: explain(window, verdict),
     rms: features.rms,
     bands: features.bands,
     source,
     battery,
     alertUntil: 0,
     candidate: alerting ? verdict : null,
+    streak: 0,
   };
 }
 
@@ -157,16 +200,23 @@ export function mergeReading(
 ): LiveReading {
   const holding = previous !== undefined && previous.alertUntil > incoming.at;
 
-  // A candidate becomes an alert when the previous frame voted the same way,
-  // or while an alert is already latched (a louder frame of the same event).
-  // Frames are 64 ms: a gunshot's crack, a bark, an engine all span several,
-  // while a single loud frame is a click, a door, a bird starting mid-frame.
-  // Two agreeing frames is the cheapest filter that tells them apart; the
-  // firmware applies the same rule to its LED and its `danger` flag.
+  // The run of identical votes. It resets the moment the verdict changes:
+  // "three frames chainsaw, one frame nature, three frames chainsaw" is not a
+  // chainsaw, it is a classifier that cannot make up its mind.
+  const streak =
+    incoming.candidate !== null && previous?.candidate === incoming.candidate
+      ? previous.streak + 1
+      : incoming.candidate !== null
+        ? 1
+        : 0;
+  incoming = { ...incoming, streak };
+
+  // A vote becomes an alert once it has held for its class's number of frames,
+  // or while an alert is already latched and another frame of the same event
+  // arrives. The firmware applies the same rule to its LED and `danger` flag.
   const confirmed =
     incoming.candidate !== null &&
-    previous !== undefined &&
-    (holding || previous.candidate === incoming.candidate);
+    (holding || streak >= CONFIRM_FRAMES[incoming.candidate]);
   if (confirmed) incoming = promote(incoming, incoming.at);
 
   if (!holding || !previous) {

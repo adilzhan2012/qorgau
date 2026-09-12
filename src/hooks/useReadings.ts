@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Features } from "@/lib/audio/features";
+import { ListeningWindow } from "@/lib/audio/window";
 import {
   MAX_EVENTS,
   loadEvents,
@@ -70,6 +71,9 @@ export function useReadings(): ReadingsResult {
   const [events, setEvents] = useState<SoundEvent[]>([]);
 
   const latest = useRef<Record<string, LiveReading>>({});
+  // A second and a half of memory per device: the classifier looks at a window
+  // rather than a frame, and every board has its own.
+  const windows = useRef<Record<string, ListeningWindow>>({});
   const summaryRef = useRef<SummaryMap>({});
   const eventsRef = useRef<SoundEvent[]>([]);
   const saveTimer = useRef<number | null>(null);
@@ -96,9 +100,17 @@ export function useReadings(): ReadingsResult {
   const publish = useCallback<PublishFeatures>(
     (deviceId, source, features, extras) => {
       const previous = latest.current[deviceId];
+      const window = (windows.current[deviceId] ??= new ListeningWindow());
       const merged = mergeReading(
         previous,
-        makeReading(deviceId, source, features, extras?.battery ?? null, extras?.board ?? null),
+        makeReading(
+          deviceId,
+          source,
+          features,
+          window.push(features),
+          extras?.battery ?? null,
+          extras?.board ?? null,
+        ),
       );
       latest.current = { ...latest.current, [deviceId]: merged };
       setReadings(latest.current);
@@ -155,6 +167,7 @@ export function useReadings(): ReadingsResult {
     const { [deviceId]: _dropped, ...rest } = latest.current;
     latest.current = rest;
     setReadings(rest);
+    delete windows.current[deviceId];
 
     delete summaryRef.current[deviceId];
     saveSummaries(summaryRef.current);

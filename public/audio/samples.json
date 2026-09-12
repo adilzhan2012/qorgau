@@ -2,7 +2,7 @@
   {
     "file": "bird-demo.wav",
     "name": "bird-demo",
-    "title": "Птица",
+    "title": "Птица (тональный свист)",
     "expected": "animal",
     "expectedLabel": "Птицы, звери"
   },
@@ -37,14 +37,21 @@
   {
     "file": "nature-waterfall.wav",
     "name": "nature-waterfall",
-    "title": "Водопад",
+    "title": "Водопад (громкий ровный шум)",
     "expected": "nature",
     "expectedLabel": "Природа"
   },
   {
+    "file": "quiet-demo.wav",
+    "name": "quiet-demo",
+    "title": "Тишина (фон леса)",
+    "expected": "other",
+    "expectedLabel": "Тишина"
+  },
+  {
     "file": "vehicle-demo.wav",
     "name": "vehicle-demo",
-    "title": "Машина",
+    "title": "Машина (гул двигателя)",
     "expected": "vehicle",
     "expectedLabel": "Транспорт"
   }
