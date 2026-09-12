@@ -18,12 +18,7 @@ import {
   type BoardOpinion,
   type LiveReading,
 } from "@/lib/live/readings";
-import {
-  RECORDING_SECONDS,
-  SampleRecorder,
-  downloadRecording,
-} from "@/lib/live/recording";
-import type { ReadingSource, SoundClass, SoundEvent } from "@/lib/types";
+import type { ReadingSource, SoundEvent } from "@/lib/types";
 
 export interface PublishExtras {
   /** Battery percentage the board sent with the frame, if any. */
@@ -39,15 +34,6 @@ export type PublishFeatures = (
   extras?: PublishExtras,
 ) => void;
 
-/** Что пишется прямо сейчас, для полоски в интерфейсе. */
-export interface RecordingState {
-  label: SoundClass;
-  deviceId: string;
-  frames: number;
-  /** 0..1. */
-  progress: number;
-}
-
 export interface ReadingsResult {
   /** Latest reading per device id, for devices that reported this session. */
   readings: Record<string, LiveReading>;
@@ -59,11 +45,6 @@ export interface ReadingsResult {
   /** Removes everything remembered about a device. */
   forget: (deviceId: string) => void;
   clearEvents: () => void;
-  /** Запись образца: null, когда ничего не пишется. */
-  recording: RecordingState | null;
-  /** Начать запись «вот это — такой-то звук» с указанного устройства. */
-  startRecording: (label: SoundClass, deviceId: string) => void;
-  cancelRecording: () => void;
 }
 
 /** Summaries are written this often at most; frames arrive ~15×/s. */
@@ -89,12 +70,7 @@ export function useReadings(): ReadingsResult {
   const [summaries, setSummaries] = useState<SummaryMap>({});
   const [events, setEvents] = useState<SoundEvent[]>([]);
 
-  const [recording, setRecording] = useState<RecordingState | null>(null);
-
   const latest = useRef<Record<string, LiveReading>>({});
-  // Запись идёт через тот же publish, что и всё остальное: другого места, где
-  // видны кадры и с платы, и с микрофона ноутбука, просто нет.
-  const recorder = useRef<SampleRecorder | null>(null);
   // A second and a half of memory per device: the classifier looks at a window
   // rather than a frame, and every board has its own.
   const windows = useRef<Record<string, ListeningWindow>>({});
@@ -123,25 +99,6 @@ export function useReadings(): ReadingsResult {
 
   const publish = useCallback<PublishFeatures>(
     (deviceId, source, features, extras) => {
-      // Пишем образец, если он про это устройство. Кадры берём до
-      // классификации: в файл должно попасть то, что слышал датчик, а не то,
-      // что о нём подумал сегодняшний классификатор.
-      const active = recorder.current;
-      if (active !== null && active.deviceId === deviceId) {
-        const done = active.push(features, source);
-        setRecording({
-          label: active.label,
-          deviceId,
-          frames: active.frames,
-          progress: active.progress,
-        });
-        if (done) {
-          downloadRecording(active.toRecording());
-          recorder.current = null;
-          setRecording(null);
-        }
-      }
-
       const previous = latest.current[deviceId];
       const window = (windows.current[deviceId] ??= new ListeningWindow());
       const merged = mergeReading(
@@ -206,16 +163,6 @@ export function useReadings(): ReadingsResult {
     [scheduleSave],
   );
 
-  const startRecording = useCallback((label: SoundClass, deviceId: string) => {
-    recorder.current = new SampleRecorder(label, deviceId, RECORDING_SECONDS);
-    setRecording({ label, deviceId, frames: 0, progress: 0 });
-  }, []);
-
-  const cancelRecording = useCallback(() => {
-    recorder.current = null;
-    setRecording(null);
-  }, []);
-
   const forget = useCallback((deviceId: string) => {
     const { [deviceId]: _dropped, ...rest } = latest.current;
     latest.current = rest;
@@ -238,27 +185,7 @@ export function useReadings(): ReadingsResult {
   }, []);
 
   return useMemo(
-    () => ({
-      readings,
-      summaries,
-      events,
-      publish,
-      forget,
-      clearEvents,
-      recording,
-      startRecording,
-      cancelRecording,
-    }),
-    [
-      readings,
-      summaries,
-      events,
-      publish,
-      forget,
-      clearEvents,
-      recording,
-      startRecording,
-      cancelRecording,
-    ],
+    () => ({ readings, summaries, events, publish, forget, clearEvents }),
+    [readings, summaries, events, publish, forget, clearEvents],
   );
 }
