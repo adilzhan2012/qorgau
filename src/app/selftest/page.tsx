@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useState } from "react";
 
 import { Header } from "@/components/Header";
 import { classify, explain } from "@/lib/audio/classify";
@@ -45,29 +45,44 @@ function analyse(signal: Float32Array): WindowFeatures {
   return (loudest ?? listening.push(extractor.extract(new Float32Array(TEST_FRAME)))) as WindowFeatures;
 }
 
-export default function SelfTestPage() {
-  const results = useMemo(
-    () =>
-      TEST_CASES.map(({ expect, name, build }) => {
-        const window = analyse(build());
-        const classification = classify(window);
-        const top = topSoundClass(classification)!;
-        return {
-          name,
-          expectLabel: SOUND_CLASS_LABELS[expect],
-          gotLabel: SOUND_CLASS_LABELS[top.name],
-          danger: SOUND_SAFETY[top.name] === "danger",
-          confidence: top.value,
-          pass: top.name === expect,
-          why: explain(window, top.name),
-          window,
-        };
-      }),
-    [],
-  );
+interface Result {
+  name: string;
+  expectLabel: string;
+  gotLabel: string;
+  danger: boolean;
+  confidence: number;
+  pass: boolean;
+  why: string[];
+  window: WindowFeatures;
+}
 
-  const passed = results.filter((r) => r.pass).length;
-  const allPassed = passed === results.length;
+function run(): Result[] {
+  return TEST_CASES.map(({ expect, name, build }) => {
+    const window = analyse(build());
+    const top = topSoundClass(classify(window))!;
+    return {
+      name,
+      expectLabel: SOUND_CLASS_LABELS[expect],
+      gotLabel: SOUND_CLASS_LABELS[top.name],
+      danger: SOUND_SAFETY[top.name] === "danger",
+      confidence: top.value,
+      pass: top.name === expect,
+      why: explain(window, top.name),
+      window,
+    };
+  });
+}
+
+export default function SelfTestPage() {
+  // Считаем после монтирования, а не при рендере. Сигналы синтезируются со
+  // случайным шумом, поэтому статический HTML, собранный при сборке, и первый
+  // рендер в браузере дают разные числа — React справедливо ругается на
+  // расхождение. Пусть сервер отдаёт «считаю…», а считает браузер.
+  const [results, setResults] = useState<Result[] | null>(null);
+  useEffect(() => setResults(run()), []);
+
+  const passed = results?.filter((r) => r.pass).length ?? 0;
+  const allPassed = results !== null && passed === results.length;
 
   return (
     <div className="min-h-[100dvh]">
@@ -89,15 +104,25 @@ export default function SelfTestPage() {
 
         <div
           className={`mt-6 inline-flex items-center gap-2.5 rounded-full px-4 py-2 text-[15px] font-medium ${
-            allPassed ? "bg-accent-soft text-accent" : "bg-alarm-soft text-alarm"
+            results === null
+              ? "bg-surface text-muted"
+              : allPassed
+                ? "bg-accent-soft text-accent"
+                : "bg-alarm-soft text-alarm"
           }`}
         >
-          <span className={`h-2 w-2 rounded-full ${allPassed ? "bg-accent" : "bg-alarm"}`} />
-          {passed} из {results.length} распознано верно
+          <span
+            className={`h-2 w-2 rounded-full ${
+              results === null ? "bg-faint" : allPassed ? "bg-accent" : "bg-alarm"
+            }`}
+          />
+          {results === null
+            ? "считаю…"
+            : `${passed} из ${results.length} распознано верно`}
         </div>
 
         <ul className="mt-8 space-y-3">
-          {results.map((r) => (
+          {(results ?? []).map((r) => (
             <li key={r.name} className="rounded-2xl bg-surface p-5 shadow-card">
               <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
                 <span className="text-[17px] font-medium">{r.name}</span>
