@@ -17,6 +17,7 @@ import { useDevices } from "@/hooks/useDevices";
 import { useNow } from "@/hooks/useNow";
 import { useReadings } from "@/hooks/useReadings";
 import { PARK_CENTER } from "@/lib/devices/store";
+import { distanceMeters } from "@/lib/geo";
 import { plural } from "@/lib/time";
 import type { Device, DeviceFilter } from "@/lib/types";
 
@@ -45,6 +46,9 @@ interface FormState {
 }
 
 const NOTICE_MS = 7000;
+
+/** Below this the marker stays put; typical GPS jitter is 2–5 m. */
+const GPS_MOVE_METERS = 8;
 
 export function MonitorView() {
   // Everything lives in this page: the roster in localStorage, the readings in
@@ -102,7 +106,7 @@ export function MonitorView() {
       });
       setNotice({
         title: `Новая плата: ${record.id}`,
-        text: "Она появилась в центре карты. Откройте её и нажмите «Переставить», чтобы поставить туда, где стоит датчик.",
+        text: "Она появилась в центре карты. Как только её GPS поймает спутники, она сама встанет на место; без GPS откройте её и нажмите «Переставить».",
       });
       return record.id;
     },
@@ -114,11 +118,24 @@ export function MonitorView() {
     [store.records],
   );
 
+  // GPS moves a device only when it is set to follow, and only by a real
+  // distance: consumer GPS wanders a few metres on its own, and a marker that
+  // twitches every two seconds is noise, not information.
+  const storeRef = useRef(store);
+  storeRef.current = store;
+  const onFix = useCallback((deviceId: string, point: LatLng) => {
+    const record = storeRef.current.records.find((r) => r.id === deviceId);
+    if (!record || !record.followGps) return;
+    if (distanceMeters(record, point) < GPS_MOVE_METERS) return;
+    storeRef.current.update(deviceId, point);
+  }, []);
+
   const boards = useBoards({
     publish,
     resolveDevice,
     hasDevice,
     fallbackDeviceId: sensorDeviceId || null,
+    onFix,
   });
 
   const counts = useMemo(
@@ -265,6 +282,29 @@ export function MonitorView() {
 
   const writeId = useCallback((board: Board) => boards.writeId(board.key), [boards]);
 
+  const setFollowGps = useCallback(
+    (device: Device, follow: boolean) => {
+      store.update(device.id, { followGps: follow });
+      // Switching it on should show its effect right away, not in two seconds.
+      const gps = boards.boards.find((board) => board.deviceId === device.id)?.gps;
+      if (follow && gps?.fix && gps.lat !== null && gps.lng !== null) {
+        store.update(device.id, { lat: gps.lat, lng: gps.lng });
+        flyTo({ lat: gps.lat, lng: gps.lng });
+      }
+    },
+    [store, boards.boards, flyTo],
+  );
+
+  const moveToGps = useCallback(
+    (device: Device) => {
+      const gps = boards.boards.find((board) => board.deviceId === device.id)?.gps;
+      if (!gps?.fix || gps.lat === null || gps.lng === null) return;
+      store.update(device.id, { lat: gps.lat, lng: gps.lng });
+      flyTo({ lat: gps.lat, lng: gps.lng });
+    },
+    [store, boards.boards, flyTo],
+  );
+
   const pick = useMemo(
     () => (picking ? { draft, onPick: (point: LatLng) => setDraft(point) } : null),
     [picking, draft],
@@ -293,6 +333,7 @@ export function MonitorView() {
           <div className="scrollbar-none flex-1 overflow-y-auto px-5 pb-8">
             <DeviceList
               devices={visible}
+              boards={boards.boards}
               total={devices.length}
               filter={filter}
               selectedId={selectedId}
@@ -366,6 +407,8 @@ export function MonitorView() {
           onMove={openMove}
           onDelete={deleteDevice}
           onWriteId={writeId}
+          onFollowGps={setFollowGps}
+          onMoveToGps={moveToGps}
         />
 
         {form && (

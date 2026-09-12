@@ -26,7 +26,7 @@ export const DEFAULT_DEVICES: DeviceRecord[] = [
   { id: "QRG-004", name: "Бутаковский водопад", lat: 43.1689, lng: 77.1204 },
   { id: "QRG-005", name: "Плато Кок-Жайляу", lat: 43.1402, lng: 77.0208 },
   { id: "QRG-006", name: "Проходное ущелье", lat: 43.0912, lng: 76.8931 },
-].map((record) => ({ ...record, createdAt: 0, origin: "manual" as const }));
+].map((record) => ({ ...record, createdAt: 0, origin: "manual" as const, followGps: false }));
 
 export const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,23}$/;
 
@@ -77,6 +77,7 @@ function toRecord(raw: unknown): DeviceRecord | null {
     lng,
     createdAt: Number.isFinite(Number(o.createdAt)) ? Number(o.createdAt) : 0,
     origin: o.origin === "board" ? "board" : "manual",
+    followGps: o.followGps === true,
   };
 }
 

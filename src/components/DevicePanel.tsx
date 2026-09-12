@@ -4,11 +4,14 @@ import { useEffect, useState } from "react";
 
 import { BatteryStat, StatusPill } from "@/components/BatteryIcon";
 import type { Board } from "@/hooks/useBoards";
-import { formatClock, formatRelativeTime } from "@/lib/time";
+import { formatClock, formatRelativeTime, plural } from "@/lib/time";
 import {
+  SAFETY_LABELS,
   SOUND_CLASSES,
   SOUND_CLASS_LABELS,
+  SOUND_SAFETY,
   SOURCE_LABELS,
+  topSoundClass,
   type Classification,
   type Device,
   type SoundEvent,
@@ -26,6 +29,8 @@ interface DevicePanelProps {
   onMove: (device: Device) => void;
   onDelete: (device: Device) => void;
   onWriteId: (board: Board) => Promise<void>;
+  onFollowGps: (device: Device, follow: boolean) => void;
+  onMoveToGps: (device: Device) => void;
 }
 
 /** A thin rounded rail with the label beside it and the value muted after it. */
@@ -131,6 +136,8 @@ export function DevicePanel({
   onMove,
   onDelete,
   onWriteId,
+  onFollowGps,
+  onMoveToGps,
 }: DevicePanelProps) {
   const [shown, setShown] = useState<Device | null>(device);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -165,6 +172,8 @@ export function DevicePanel({
 
   const alert = shown.status === "alert";
   const offline = shown.status === "offline";
+  const top = topSoundClass(shown.classification);
+  const boardVerdict = board?.state === "listening" ? board.verdict : null;
   const boardNeedsId = board !== null && board.boardId !== null && board.boardId !== shown.id;
 
   const writeId = async () => {
@@ -234,9 +243,36 @@ export function DevicePanel({
                   ? shown.lastSignal
                     ? `Молчит. Последний сигнал ${formatRelativeTime(shown.lastSignal, now)}`
                     : "Ещё ни разу не выходило на связь"
-                  : "Слушает. Ничего необычного."}
+                  : top && top.name !== "other"
+                    ? `${SOUND_CLASS_LABELS[top.name]} — безопасный звук.`
+                    : "Слушает. Ничего необычного."}
             </span>
           </div>
+
+          {/* The board's own decision — the thing that would travel over LoRa.
+              Shown next to the site's so a disagreement is visible, not hidden. */}
+          {boardVerdict && (
+            <div
+              className={`mt-4 flex items-center justify-between gap-3 rounded-2xl px-4 py-3 ${
+                boardVerdict.danger ? "bg-alarm-soft" : "bg-accent-soft"
+              }`}
+            >
+              <span>
+                <span className="stat-label block">Вердикт платы</span>
+                <span className="text-[15px] font-medium">
+                  {SOUND_CLASS_LABELS[boardVerdict.top]}
+                  <span className="ml-2 text-[13px] tabular-nums text-muted">{boardVerdict.conf}%</span>
+                </span>
+              </span>
+              <span
+                className={`rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.06em] ${
+                  boardVerdict.danger ? "bg-alarm text-canvas" : "bg-accent text-canvas"
+                }`}
+              >
+                {boardVerdict.danger ? SAFETY_LABELS.danger : SAFETY_LABELS[SOUND_SAFETY[boardVerdict.top]]}
+              </span>
+            </div>
+          )}
 
           {/* The board behind this device, and the one thing it may need:
               to be told its own id so it finds this device on any laptop. */}
@@ -279,6 +315,72 @@ export function DevicePanel({
                           : `Записать ${shown.id} в плату`}
                   </button>
                 </div>
+              )}
+            </div>
+          )}
+
+          {/* Where the board says it is. The device follows by default when the
+              board created it; a hand-placed device asks first. */}
+          {board?.gps && (
+            <div className="mt-4 rounded-2xl bg-white/[0.04] p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="stat-label">GPS платы</p>
+                <span
+                  className={`text-[11px] font-medium ${
+                    board.gps.fix ? "text-accent" : board.gps.seen ? "text-warn" : "text-alarm"
+                  }`}
+                >
+                  {board.gps.fix
+                    ? `${board.gps.sats} ${plural(board.gps.sats, "спутник", "спутника", "спутников")}`
+                    : board.gps.seen
+                      ? `ищет спутники${board.gps.sats > 0 ? ` · видно ${board.gps.sats}` : ""}`
+                      : "модуль молчит"}
+                </span>
+              </div>
+
+              {board.gps.fix && board.gps.lat !== null && board.gps.lng !== null ? (
+                <p className="mt-1.5 font-mono text-[13px] tabular-nums">
+                  {board.gps.lat.toFixed(5)}, {board.gps.lng.toFixed(5)}
+                  <span className="ml-2 text-[11px] text-faint">
+                    {board.gps.hdop !== null && `HDOP ${board.gps.hdop.toFixed(1)}`}
+                    {board.gps.alt !== null && ` · ${Math.round(board.gps.alt)} м`}
+                  </span>
+                </p>
+              ) : (
+                <p className="mt-1.5 text-[12px] leading-relaxed text-faint">
+                  {board.gps.seen
+                    ? "Первый захват под открытым небом — от одной до пяти минут. В помещении GPS не работает."
+                    : "Ни одного байта от модуля. Проверьте TX модуля → GPIO18 и питание."}
+                </p>
+              )}
+
+              <label className="mt-3 flex cursor-pointer items-center justify-between gap-3">
+                <span className="text-[13px] text-muted">Координаты с GPS</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={shown.followGps}
+                  onClick={() => onFollowGps(shown, !shown.followGps)}
+                  className={`relative h-[26px] w-[44px] shrink-0 rounded-full transition-colors duration-300 ease-apple ${
+                    shown.followGps ? "bg-accent" : "bg-white/15"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-[3px] h-5 w-5 rounded-full bg-white shadow-card transition-transform duration-300 ease-apple ${
+                      shown.followGps ? "translate-x-[21px]" : "translate-x-[3px]"
+                    }`}
+                  />
+                </button>
+              </label>
+
+              {!shown.followGps && board.gps.fix && (
+                <button
+                  type="button"
+                  onClick={() => onMoveToGps(shown)}
+                  className="mt-2.5 w-full rounded-xl bg-raised px-3 py-2.5 text-[13px] font-medium transition-all duration-300 ease-apple hover:bg-raised/70 active:scale-[0.98]"
+                >
+                  Переставить по GPS один раз
+                </button>
               )}
             </div>
           )}

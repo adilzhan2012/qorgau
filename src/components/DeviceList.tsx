@@ -2,10 +2,20 @@
 
 import { BatteryIcon, StatusPill } from "@/components/BatteryIcon";
 import { formatRelativeTime } from "@/lib/time";
-import { SOUND_CLASS_LABELS, topSoundClass, type Device, type DeviceFilter } from "@/lib/types";
+import type { Board } from "@/hooks/useBoards";
+import {
+  SAFETY_LABELS,
+  SOUND_CLASS_LABELS,
+  SOUND_SAFETY,
+  topSoundClass,
+  type Device,
+  type DeviceFilter,
+} from "@/lib/types";
 
 interface DeviceListProps {
   devices: Device[];
+  /** Connected boards, to show which devices have a GPS behind them. */
+  boards: Board[];
   /** How many exist before filtering, to tell "nothing matches" from "nothing at all". */
   total: number;
   filter: DeviceFilter;
@@ -26,6 +36,7 @@ const EMPTY_FILTER: Record<DeviceFilter, string> = {
 
 export function DeviceList({
   devices,
+  boards,
   total,
   filter,
   selectedId,
@@ -88,6 +99,7 @@ export function DeviceList({
         const selected = device.id === selectedId;
         const top = topSoundClass(device.classification);
         const alert = device.status === "alert";
+        const gps = boards.find((board) => board.deviceId === device.id && board.state === "listening")?.gps;
 
         return (
           <li key={device.id}>
@@ -108,7 +120,7 @@ export function DeviceList({
                 {alert && device.soundType
                   ? device.soundType
                   : top && device.status === "online"
-                    ? `${SOUND_CLASS_LABELS[top.name]} ${Math.round(top.value)}%`
+                    ? `${SOUND_CLASS_LABELS[top.name]} ${Math.round(top.value)}% · ${SAFETY_LABELS[SOUND_SAFETY[top.name]]}`
                     : formatRelativeTime(device.lastSignal, now)}
               </p>
 
@@ -117,7 +129,13 @@ export function DeviceList({
                   {alert
                     ? formatRelativeTime(device.lastSignal, now)
                     : device.status === "online"
-                      ? "слушает сейчас"
+                      ? gps
+                        ? gps.fix
+                          ? `GPS · ${gps.sats} спут.`
+                          : gps.seen
+                            ? "GPS ищет спутники"
+                            : "GPS молчит"
+                        : "слушает сейчас"
                       : top
                         ? `${device.id} · ${SOUND_CLASS_LABELS[top.name]} ${Math.round(top.value)}%`
                         : device.id}

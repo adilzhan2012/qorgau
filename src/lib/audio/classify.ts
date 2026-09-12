@@ -1,5 +1,5 @@
 import type { Features } from "./features";
-import { SOUND_CLASSES, type Classification, type SoundClass } from "@/lib/types";
+import { SOUND_CLASSES, SOUND_SAFETY, type Classification, type SoundClass } from "@/lib/types";
 
 /**
  * The classifier. Every sound source in the project — the ESP32, the laptop
@@ -17,15 +17,9 @@ const SILENCE_DB = -58;
 /** Softmax temperature. Lower = more decisive, higher = more hedged. */
 const TEMPERATURE = 0.15;
 
-/** Classes that should put a device into `alert`. */
-const ALERT_CLASSES: ReadonlySet<SoundClass> = new Set<SoundClass>([
-  "gunshot",
-  "chainsaw",
-  "dog",
-]);
-
+/** Classes that should put a device into `alert`: everything marked dangerous. */
 export function isAlertClass(name: SoundClass): boolean {
-  return ALERT_CLASSES.has(name);
+  return SOUND_SAFETY[name] === "danger";
 }
 
 /** Mean of `bands[from..to)`, scaled so a full-width match reads as ~1. */
@@ -72,11 +66,22 @@ function score(f: Features): Terms {
   const bright = energy(f.bands, 10, 16); // 1277 – 8000 Hz birds, hiss, crack
 
   return {
+    // Leaves, wind, a river, rain: broadband noise that just keeps going. It
+    // shares the flat spectrum with a gunshot, so the steadiness carries the
+    // weight — a waterfall must never read as a rifle.
+    // The two noise terms are deliberately steep: a chainsaw is half-flat and
+    // half-pitched, and a gentle 1 - x would hand it a third of this score.
+    nature: [
+      { label: "ровный шум без атаки", weight: 3.0, value: 1 - f.attack },
+      { label: "широкий шумовой спектр", weight: 3.0, value: (f.flatness - 0.4) / 0.4 },
+      { label: "нет высоты тона", weight: 2.5, value: 1 - f.harmonic * 1.5 },
+      { label: "энергия по всему спектру", weight: 1.5, value: f.spread },
+    ],
     gunshot: [
       { label: "резкая атака", weight: 3.0, value: f.attack },
       { label: "широкий шумовой спектр", weight: 2.5, value: f.flatness },
       { label: "энергия размазана по спектру", weight: 2.0, value: f.spread },
-      { label: "нет высоты тона", weight: 2.0, value: 1 - f.harmonic },
+      { label: "нет высоты тона", weight: 3.0, value: 1 - f.harmonic },
       { label: "громкость", weight: 1.0, value: loud },
     ],
     chainsaw: [
@@ -88,7 +93,7 @@ function score(f: Features): Terms {
     dog: [
       { label: "энергия в полосе 0.4–2.3 кГц", weight: 3.0, value: bark },
       { label: "быстрое нарастание", weight: 1.5, value: gauss(f.attack, 0.75, 0.35) },
-      { label: "голосовая гармоника", weight: 1.5, value: f.harmonic },
+      { label: "голосовая гармоника", weight: 2.5, value: f.harmonic },
       { label: "формантная структура", weight: 1.0, value: gauss(f.flatness, 0.3, 0.25) },
     ],
     vehicle: [

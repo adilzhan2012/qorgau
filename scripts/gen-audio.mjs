@@ -25,6 +25,13 @@ const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "p
 
 const noise = () => Math.random() * 2 - 1;
 
+/**
+ * A recording is never digitally silent: every microphone has a floor, and
+ * the classifier measures a sound's attack against it. Synthetic files get
+ * the same faint forest tone under everything, ~-63 dBFS.
+ */
+const floor = () => noise() * 0.0015;
+
 /** One rifle report starting at `onset`, as heard from some distance away. */
 function gunshotAt(t, onset) {
   if (t < onset) return 0;
@@ -51,21 +58,24 @@ function barkAt(t, onset) {
 const SOUNDS = [
   {
     file: "gunshot-demo.wav",
+    title: "Выстрел",
     seconds: 3,
     // Three shots, so the alert has time to appear and be pointed at.
-    synth: (t) => gunshotAt(t, 0.4) + gunshotAt(t, 1.3) + gunshotAt(t, 2.2),
+    synth: (t) => floor() + gunshotAt(t, 0.4) + gunshotAt(t, 1.3) + gunshotAt(t, 2.2),
   },
   {
     file: "dog-demo.wav",
+    title: "Лай собаки",
     seconds: 3,
     synth: (t) => {
-      let v = 0;
+      let v = floor();
       for (const onset of [0.3, 0.65, 1.0, 1.7, 2.05, 2.4]) v += barkAt(t, onset);
       return v;
     },
   },
   {
     file: "chainsaw-demo.wav",
+    title: "Бензопила",
     seconds: 3,
     synth: (t) => {
       // Engine harmonics, deeply modulated at the firing rate, revving up.
@@ -78,6 +88,7 @@ const SOUNDS = [
   },
   {
     file: "vehicle-demo.wav",
+    title: "Машина",
     seconds: 3,
     synth: (t) => {
       let v = 0;
@@ -86,15 +97,31 @@ const SOUNDS = [
     },
   },
   {
-    file: "ambient-forest.wav",
+    file: "bird-demo.wav",
+    title: "Птица",
     seconds: 3,
     synth: (t) => {
-      // Room tone with the occasional bird, so "Другое" has something honest
-      // to sit on during the demo.
+      // A whistle with vibrato, in phrases with short breaths between them.
+      const phrase = t % 0.7 < 0.58;
       const phase = 2 * Math.PI * 2600 * t - 180 * Math.cos(2 * Math.PI * 5 * t);
-      const bird = t > 1.2 && t < 1.8 ? Math.sin(phase) * 0.3 : 0;
-      return noise() * 0.004 + bird;
+      return floor() + (phrase ? Math.sin(phase) * 0.3 : 0);
     },
+  },
+  {
+    file: "nature-leaves.wav",
+    title: "Листва на ветру",
+    seconds: 3,
+    synth: (t) => {
+      // Wind in leaves: hiss that swells and fades over a second or two.
+      const gust = 0.55 + 0.45 * Math.sin(2 * Math.PI * 0.4 * t + 1);
+      return floor() + noise() * 0.12 * gust;
+    },
+  },
+  {
+    file: "nature-waterfall.wav",
+    title: "Водопад",
+    seconds: 3,
+    synth: () => floor() + noise() * 0.5, // loud, broadband, and perfectly steady
   },
 ];
 
@@ -152,8 +179,9 @@ const HINTS = [
   [/dog|bark|лай|собак|пёс|пес/i, "dog", "Собака"],
   [/chain|saw|пила|бензо|пил/i, "chainsaw", "Бензопила"],
   [/car|truck|engine|vehicle|мотор|машин|транспорт|двигат/i, "vehicle", "Транспорт"],
-  [/bird|animal|wolf|птиц|животн|волк|зверь/i, "animal", "Животное"],
-  [/ambient|forest|quiet|фон|лес|тишин/i, "other", "Другое"],
+  [/bird|animal|wolf|птиц|животн|волк|зверь/i, "animal", "Птицы, звери"],
+  [/leaves|leaf|wind|water|river|rain|nature|листв|ветер|вод|дожд|природ|ambient|forest|лес/i, "nature", "Природа"],
+  [/quiet|silence|фон|тишин/i, "other", "Тишина"],
 ];
 
 const AUDIO_EXTENSIONS = [".wav", ".mp3", ".ogg", ".m4a", ".flac", ".aac", ".webm"];
@@ -163,11 +191,15 @@ const samples = readdirSync(OUT_DIR)
   .sort((a, b) => a.localeCompare(b, "ru"))
   .map((file) => {
     const hit = HINTS.find(([pattern]) => pattern.test(file));
+    const builtin = SOUNDS.find((item) => item.file === file);
     return {
       // Just the filename: the site adds the prefix itself, because on GitHub
       // Pages everything lives under /qorgau/ rather than at the root.
       file,
       name: path.basename(file, path.extname(file)),
+      // Button text: the built-in synths name themselves; a dropped-in file
+      // shows its class, or its filename when the name says nothing.
+      title: builtin?.title ?? null,
       expected: hit ? hit[1] : null,
       expectedLabel: hit ? hit[2] : null,
     };

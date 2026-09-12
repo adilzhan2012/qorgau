@@ -1,31 +1,56 @@
 /*
- * Qorgau — акустический датчик на ESP32-S3 + микрофон INMP441 (I2S).
+ * Qorgau — акустический датчик на ESP32-S3: I2S-микрофон + GPS.
  * ------------------------------------------------------------------
  *
  * Что делает плата:
  *   1. пишет звук с микрофона на 16 кГц кадрами по 1024 отсчёта (64 мс);
  *   2. считает БПФ и вытаскивает из кадра 6 чисел + 16 полос спектра;
- *   3. печатает всё это одной строкой JSON в USB Serial;
- *   4. представляется по имени (ID) и позволяет сайту это имя поменять.
+ *   3. САМА решает, что это за звук, и опасен ли он:
+ *        безопасно — природа (листва, ветер, вода), птицы и звери, тишина;
+ *        опасно    — лай собаки, машина, бензопила, выстрел;
+ *      и показывает это встроенным светодиодом: зелёный / красный;
+ *   4. печатает признаки и вердикт одной строкой JSON в USB Serial;
+ *   5. представляется по имени (ID) и позволяет сайту это имя поменять;
+ *   6. читает GPS и раз в две секунды сообщает, где стоит — сайт сам
+ *      ставит устройство на карту.
+ *
+ * Классификатор здесь — точная копия src/lib/audio/classify.ts на сайте:
+ * те же признаки, те же веса. Сайт считает вердикт и сам (для микрофона
+ * ноутбука и файлов), а вердикт платы показывает рядом. В настоящем лесу
+ * по LoRa уйдёт именно вердикт платы — несколько байт.
  *
  * ID хранится во флеше платы. Прошивать под каждую точку не нужно: на сайте
  * открываете устройство → «Записать ID в плату», и плата с тех пор сама
  * находит своё место на карте на любом ноутбуке.
  *
- * Что делает САЙТ: решает, что это за звук. Плата ничего не классифицирует —
- * она только слушает и описывает. Поэтому логику распознавания можно менять
- * в браузере, не перепрошивая плату.
+ * Если правите пороги — правьте в обоих местах, иначе плата и сайт
+ * разойдутся во мнениях. Страница /selftest проверяет версию сайта.
  *
  * ВАЖНО про Arduino UNO: подключить к нему INMP441 нельзя. У ATmega328P нет
- * блока I2S, всего 2 КБ ОЗУ и 16 МГц — БПФ на 512 точек туда не поместится.
+ * блока I2S, всего 2 КБ ОЗУ и 16 МГц — БПФ на 1024 точки туда не поместится.
  * Микрофон работает только с ESP32-S3.
  *
- * ── Распиновка (INMP441 → ESP32-S3) ────────────────────────────────
+ * ── Микрофон: INMP441 или ICS-43434 (одинаковая распиновка) ─────────
  *      VDD  → 3V3            SCK (BCLK) → GPIO4
  *      GND  → GND            WS  (LRCL) → GPIO5
  *      L/R  → GND            SD  (DOUT) → GPIO6
- *   L/R на землю = левый канал, именно его мы и читаем.
+ *   Ножка L/R выбирает, в каком из двух слотов I2S микрофон отдаёт данные.
+ *   В каком именно — зависит и от микрофона, и от версии драйвера, и в
+ *   интернете на этот счёт спорят. Поэтому плата читает ОБА слота и сама
+ *   берёт тот, где есть сигнал; L/R можно посадить хоть на GND, хоть на 3V3.
+ *   Оба микрофона — цифровые I2S MEMS с одним и тем же интерфейсом, подходит
+ *   любой. Если подключить оба сразу на одну шину (SCK, WS, SD общие) с
+ *   разным L/R — плата возьмёт тот, что громче в момент старта.
  *   Если у вас распаяно иначе — поменяйте три строки PIN_* ниже.
+ *
+ * ── GPS: любой UART-модуль с NMEA (NEO-6M, NEO-M8N, ATGM336H…) ──────
+ *      VCC  → 3V3 (или 5V, если на модуле есть стабилизатор — обычно есть)
+ *      GND  → GND
+ *      TX   → GPIO18   (модуль ГОВОРИТ → плата слушает: это RX платы)
+ *      RX   → GPIO17   (можно не подключать: мы модулю ничего не шлём)
+ *   Скорость 9600 — заводская у всех перечисленных. Первый захват спутников
+ *   под открытым небом занимает 1–5 минут; в помещении GPS не работает.
+ *   Без GPS плата работает как раньше — просто не сообщает координаты.
  *
  * ── Как загрузить ──────────────────────────────────────────────────
  *   Инструменты → Плата → ESP32 Arduino → «ESP32S3 Dev Module»
@@ -42,8 +67,16 @@
  *   ВНИМАНИЕ: Монитор порта надо ЗАКРЫТЬ перед подключением из браузера —
  *   COM-порт может держать только одна программа.
  *
+ * ── Что печатает плата ─────────────────────────────────────────────
+ *   {"hello":"qorgau","fw":"1.2","id":"QRG-001","mic":"ok"}   при старте и по запросу
+ *   {"id":"QRG-001","rms":-52.3,...,"top":"nature","conf":87,"danger":false,"bands":[...]}
+ *                                                                ~15 раз в секунду
+ *   {"gps":{"fix":true,"lat":43.05613,"lng":76.98481,"sats":7,"hdop":1.1,"alt":1650}}
+ *   {"gps":{"fix":false,"sats":2}}                              раз в 2 секунды
+ *   {"gps":{"fix":false,"seen":false}}   модуль молчит: проверьте TX→GPIO18 и питание
+ *
  * ── Команды с сайта (строка JSON в порт) ───────────────────────────
- *   {"get":"hello"}            → плата отвечает {"hello":"qorgau","fw":...,"id":...,"mic":...}
+ *   {"get":"hello"}            → плата отвечает hello
  *   {"set":{"id":"QRG-007"}}   → сохраняет новый ID во флеш и отвечает hello
  */
 
@@ -54,11 +87,24 @@
 
 // ─────────────────────────── Настройки ───────────────────────────
 
-#define FW_VERSION  "1.1"
+#define FW_VERSION  "1.4"
 #define DEFAULT_ID  "QRG-001"   // ID до того, как сайт запишет свой
-#define PIN_BCLK    4           // SCK на модуле INMP441
+#define PIN_BCLK    4           // SCK на модуле микрофона
 #define PIN_LRCL    5           // WS
 #define PIN_DOUT    6           // SD
+
+// Встроенный RGB-светодиод (WS2812). На ESP32-S3-DevKitC-1 это GPIO48, на
+// части плат — GPIO38. -1 — не использовать. Зелёный — безопасно, красный —
+// опасно, синий — тишина, жёлтый мигает — GPS ещё ищет спутники.
+#define PIN_LED      48
+#define LED_BRIGHT   28         // 0..255; больше — слепит
+
+// GPS по UART1. PIN_GPS_RX — куда приходит TX модуля. -1 — GPS не подключён.
+#define PIN_GPS_RX   18
+#define PIN_GPS_TX   17
+#define GPS_BAUD     9600
+#define GPS_REPORT_MS 2000      // как часто сообщать координаты сайту
+#define GPS_SILENT_MS 5000      // сколько молчания считать «модуль не отвечает»
 
 // Батарея. -1 — плата на USB и заряд не измеряет (в JSON поля "bat" не будет).
 // Для автономной точки: делитель 1:1 (два одинаковых резистора) с плюса
@@ -70,7 +116,7 @@
 
 #define SAMPLE_RATE 16000
 #define FRAME_LEN   1024        // 64 мс — столько же берёт браузер
-#define FFT_SIZE    512
+#define FFT_SIZE    1024        // весь кадр: спектр и громкость с одних и тех же 64 мс
 #define BAND_COUNT  16
 #define BAND_LOW_HZ 60.0f
 #define BAND_HI_HZ  8000.0f
@@ -90,7 +136,8 @@
 
 // ─────────────────────────── Буферы ───────────────────────────────
 
-static int32_t rawBuf[FRAME_LEN];      // сырые 32-битные слова из I2S
+static int32_t rawBuf[FRAME_LEN * 2];  // сырые 32-битные слова из I2S, два слота вперемешку
+static int     micSlot = -1;           // в каком слоте живёт микрофон; -1 — ещё не нашли
 static float   frame[FRAME_LEN];       // они же в диапазоне -1..1
 static float   fftRe[FFT_SIZE];
 static float   fftIm[FFT_SIZE];
@@ -108,10 +155,30 @@ static int   historyCount = 0;
 // Кто мы. Читается из флеша при старте, меняется командой с сайта.
 static Preferences prefs;
 static char deviceId[25] = DEFAULT_ID;
-static char micStatus[96] = "ok";     // "ok" или что нашла проверка микрофона
+static char micStatus[128] = "ok";    // "ok" или что нашла проверка микрофона
 static int  batteryPct = -1;          // -1 — не измеряем
 static char cmdBuf[128];              // строка команды с сайта, копится по байту
 static int  cmdLen = 0;
+
+// Вердикт: индекс класса и уверенность, плюс защёлка тревоги для светодиода.
+static int      lastTop = 6;          // CLS_OTHER
+static int      lastConf = 0;
+static bool     lastDanger = false;
+static int      dangerStreak = 0;     // подряд кадров с опасным вердиктом
+static uint32_t dangerUntilMs = 0;    // пока не прошло — светим красным
+
+// GPS: последнее, что сказал модуль.
+#if PIN_GPS_RX >= 0
+static HardwareSerial GPS(1);
+#endif
+static char     nmeaBuf[100];
+static int      nmeaLen = 0;
+static bool     gpsFix = false;
+static double   gpsLat = 0.0, gpsLng = 0.0;
+static int      gpsSats = 0;
+static float    gpsHdop = 0.0f, gpsAlt = 0.0f;
+static uint32_t gpsLastByteMs = 0;    // 0 — модуль не сказал ещё ни байта
+static uint32_t gpsLastReportMs = 0;
 
 // ───────────────────────── Утилиты ────────────────────────────────
 
@@ -284,17 +351,18 @@ static void setupTables() {
 }
 
 static bool setupI2S() {
+  // Стерео, а не моно: читаем оба слота и ниже сами находим микрофон.
 #if QORGAU_NEW_I2S
   // Ядро 3.x: setPins(bclk, ws, dout, din, mclk)
   i2s.setPins(PIN_BCLK, PIN_LRCL, -1, PIN_DOUT, -1);
   return i2s.begin(I2S_MODE_STD, SAMPLE_RATE,
-                   I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO);
+                   I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
 #else
   i2s_config_t cfg = {};
   cfg.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX);
   cfg.sample_rate = SAMPLE_RATE;
   cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT;
-  cfg.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;   // L/R модуля посажен на GND
+  cfg.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
   cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
   cfg.intr_alloc_flags = 0;
   cfg.dma_buf_count = 6;
@@ -312,9 +380,30 @@ static bool setupI2S() {
 #endif
 }
 
+/** Размах сырых значений в слоте (0 или 1) за последний кадр. 0 — линия мертва. */
+static uint32_t slotRange(int slot) {
+  int32_t lo = INT32_MAX, hi = INT32_MIN;
+  for (int i = 0; i < FRAME_LEN; i++) {
+    int32_t v = rawBuf[i * 2 + slot];
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  return (uint32_t)(hi - lo);
+}
+
+/**
+ * Находит слот с микрофоном: тот, где данные меняются. Если оба живые
+ * (два микрофона на одной шине) — тот, что размашистее. -1 — оба мертвы.
+ */
+static int pickSlot() {
+  uint32_t r0 = slotRange(0), r1 = slotRange(1);
+  if (r0 == 0 && r1 == 0) return -1;
+  return r1 > r0 ? 1 : 0;
+}
+
 /** Читает ровно FRAME_LEN отсчётов и раскладывает их в frame[] как -1..1. */
 static bool readFrame() {
-  const size_t want = FRAME_LEN * sizeof(int32_t);
+  const size_t want = FRAME_LEN * 2 * sizeof(int32_t);
   size_t got = 0;
 
 #if QORGAU_NEW_I2S
@@ -325,10 +414,15 @@ static bool readFrame() {
 
   if (got < want) return false;
 
+  // Слот выбираем заново, пока не нашли или пока в выбранном тишина по
+  // линии — микрофон могли переткнуть, не выключая плату.
+  if (micSlot < 0 || slotRange(micSlot) == 0) micSlot = pickSlot();
+  const int slot = micSlot < 0 ? 0 : micSlot;
+
   // INMP441 отдаёт 24 бита, выровненных влево в 32-битном слове.
   // Сдвиг на 8 даёт знаковое 24-битное число, делим на 2^23.
   for (int i = 0; i < FRAME_LEN; i++) {
-    frame[i] = (float)(rawBuf[i] >> 8) / 8388608.0f;
+    frame[i] = (float)(rawBuf[i * 2 + slot] >> 8) / 8388608.0f;
   }
   return true;
 }
@@ -340,20 +434,52 @@ static bool readFrame() {
  * совершенно одинаково — в обоих случаях просто идут строки с низким уровнем.
  * Здесь мы смотрим на СЫРЫЕ значения из I2S и говорим прямо, что не так.
  */
+/**
+ * Пока с микрофона идут одни нули, монитор порта должен оставаться читаемым:
+ * строки с признаками бессмысленны, их печатаем раз в секунду (сайту хватает,
+ * чтобы считать плату «в сети»), а раз в пять секунд — диагноз человеческим
+ * языком. Иначе он один раз пролетает при старте и теряется.
+ *
+ * Возвращает true, если этот кадр стоит печатать.
+ */
+static bool micDeadThrottle(float rms) {
+  static uint32_t deadSinceMs = 0;
+  static uint32_t lastFrameMs = 0;
+  static uint32_t lastNagMs = 0;
+  uint32_t now = millis();
+
+  if (rms > SILENCE_DB + 0.5f) {
+    deadSinceMs = 0;
+    return true;
+  }
+  if (deadSinceMs == 0) deadSinceMs = now;
+  if (now - deadSinceMs < 2000) return true;   // пара секунд на раскачку
+
+  if (now - lastNagMs >= 5000) {
+    lastNagMs = now;
+    if (micSlot < 0) {
+      strlcpy(micStatus, "линия SD залипла в обоих слотах: проверьте SD→GPIO6, VDD→3V3 и GND", sizeof(micStatus));
+    } else {
+      snprintf(micStatus, sizeof(micStatus),
+               "слот %d живой, но уровень на нуле: проверьте VDD→3V3 и GND", micSlot);
+    }
+    Serial.printf("{\"error\":\"микрофон молчит — %s\"}\n", micStatus);
+  }
+
+  if (now - lastFrameMs < 1000) return false;
+  lastFrameMs = now;
+  return true;
+}
+
 static void micSelfTest() {
   Serial.println("--- Qorgau: проверка микрофона (1 сек) ---");
 
   float minDb = 1e9f, maxDb = -1e9f;
-  int32_t rawMin = INT32_MAX, rawMax = INT32_MIN;
   int frames = 0;
 
   for (int i = 0; i < 15; i++) {
     if (!readFrame()) continue;
     frames++;
-    for (int k = 0; k < FRAME_LEN; k++) {
-      if (rawBuf[k] < rawMin) rawMin = rawBuf[k];
-      if (rawBuf[k] > rawMax) rawMax = rawBuf[k];
-    }
     float db = toDb(computeRms(frame, FRAME_LEN));
     if (db < minDb) minDb = db;
     if (db > maxDb) maxDb = db;
@@ -365,18 +491,18 @@ static void micSelfTest() {
     Serial.println("ОШИБКА: I2S не отдал ни одного кадра.");
     Serial.println("  Проверьте BCLK и WS — без тактов микрофон молчит.");
     strlcpy(micStatus, "I2S не отдаёт кадры: проверьте BCLK и WS", sizeof(micStatus));
-  } else if (rawMin == rawMax) {
-    Serial.printf("ОШИБКА: линия SD залипла на одном значении (%ld).\n", (long)rawMin);
+  } else if (micSlot < 0) {
+    Serial.println("ОШИБКА: линия SD залипла на одном значении в обоих слотах.");
     Serial.println("  Проверьте SD/DOUT и питание VDD=3V3. Землю не забыли?");
     strlcpy(micStatus, "линия SD залипла: проверьте SD, VDD и GND", sizeof(micStatus));
   } else if (maxDb < -85.0f) {
-    Serial.printf("ОШИБКА: данные идут, но уровень на нуле (%.0f дБ).\n", maxDb);
-    Serial.println("  Чаще всего это L/R: он должен быть посажен на GND.");
-    strlcpy(micStatus, "уровень на нуле: L/R должен сидеть на GND", sizeof(micStatus));
+    Serial.printf("ОШИБКА: данные идут (слот %d), но уровень на нуле (%.0f дБ).\n", micSlot, maxDb);
+    Serial.println("  Проверьте питание VDD=3V3 и GND.");
+    snprintf(micStatus, sizeof(micStatus), "слот %d живой, но уровень на нуле: проверьте VDD и GND", micSlot);
   } else {
-    Serial.printf("OK: микрофон работает. Уровень %.0f...%.0f дБ.\n", minDb, maxDb);
+    Serial.printf("OK: микрофон работает, слот %d. Уровень %.0f...%.0f дБ.\n", micSlot, minDb, maxDb);
     Serial.println("  Похлопайте — верхняя цифра должна подскочить к -20 дБ.");
-    strlcpy(micStatus, "ok", sizeof(micStatus));
+    snprintf(micStatus, sizeof(micStatus), "ok (слот %d)", micSlot);
   }
   Serial.println("------------------------------------------");
 }
@@ -471,6 +597,251 @@ static void pollCommands() {
   }
 }
 
+// ──────────────────────── Классификатор ───────────────────────────
+// Копия src/lib/audio/classify.ts. Каждый класс — взвешенное среднее
+// нескольких признаков, затем softmax. Никаких нейросетей: каждый вердикт
+// можно объяснить тем, какой признак его вытянул.
+
+enum { CLS_NATURE, CLS_ANIMAL, CLS_DOG, CLS_VEHICLE, CLS_CHAINSAW, CLS_GUNSHOT, CLS_OTHER, CLS_COUNT };
+static const char *CLS_NAME[CLS_COUNT]  = {"nature", "animal", "dog", "vehicle", "chainsaw", "gunshot", "other"};
+static const bool  CLS_DANGER[CLS_COUNT] = {false, false, true, true, true, true, false};
+
+static const float CLS_SILENCE_DB  = -58.0f;   // тише — это фон, а не событие
+static const float CLS_TEMPERATURE = 0.15f;    // softmax: меньше — решительнее
+static const int   CLS_ALERT_PCT   = 40;       // уверенность, с которой опасный класс — тревога
+static const uint32_t DANGER_HOLD_MS = 8000;   // выстрел длится 200 мс; красный держим дольше
+
+/** Сумма полос [from, to) — доля энергии в этом диапазоне, 0..1. */
+static float bandSum(int from, int to) {
+  float sum = 0.0f;
+  for (int i = from; i < to && i < BAND_COUNT; i++) sum += bands[i];
+  return clamp01(sum);
+}
+
+/** 1 в точке mu, спадает за sigma. Для признаков, которые должны быть «посередине». */
+static float gaussf(float x, float mu, float sigma) {
+  float d = (x - mu) / sigma;
+  return expf(-0.5f * d * d);
+}
+
+/** Взвешенное среднее clamp01(v[i]) с весами w[i]. */
+static float wavg(const float *w, const float *v, int n) {
+  float sum = 0.0f, total = 0.0f;
+  for (int i = 0; i < n; i++) { sum += w[i] * clamp01(v[i]); total += w[i]; }
+  return total > 0.0f ? sum / total : 0.0f;
+}
+
+static void classifyFrame(float rms, float zcr, float attack, float harmonic,
+                          float flatness, float spread) {
+  float loud   = clamp01((rms - CLS_SILENCE_DB) / (-12.0f - CLS_SILENCE_DB));
+  float rumble = bandSum(0, 4);    //   60 –  204 Гц  гул двигателя
+  float body   = bandSum(2, 10);   //  110 – 1277 Гц  бензопила
+  float bark   = bandSum(6, 12);   //  376 – 2353 Гц  форманты лая
+  float bright = bandSum(10, 16);  // 1277 – 8000 Гц  птицы, шипение, треск
+
+  float score[CLS_COUNT];
+  {
+    // Природа: ровный широкополосный шум. Признаки шума нарочно «крутые»:
+    // бензопила наполовину шум и наполовину тон, мягкое 1-x отдало бы ей треть.
+    const float w[] = {3.0f, 3.0f, 2.5f, 1.5f};
+    const float v[] = {1.0f - attack, (flatness - 0.4f) / 0.4f, 1.0f - harmonic * 1.5f, spread};
+    score[CLS_NATURE] = wavg(w, v, 4);
+  }
+  {
+    const float w[] = {3.0f, 1.5f, 1.5f, 1.0f};
+    const float v[] = {bright, 1.0f - flatness, 1.0f - spread, harmonic};
+    score[CLS_ANIMAL] = wavg(w, v, 4);
+  }
+  {
+    const float w[] = {3.0f, 1.5f, 2.5f, 1.0f};
+    const float v[] = {bark, gaussf(attack, 0.75f, 0.35f), harmonic, gaussf(flatness, 0.3f, 0.25f)};
+    score[CLS_DOG] = wavg(w, v, 4);
+  }
+  {
+    const float w[] = {3.5f, 1.5f, 1.5f, 1.0f};
+    const float v[] = {rumble, 1.0f - zcr * 5.0f, 1.0f - attack, harmonic};
+    score[CLS_VEHICLE] = wavg(w, v, 4);
+  }
+  {
+    const float w[] = {2.5f, 2.0f, 1.5f, 1.5f};
+    const float v[] = {body, harmonic, 1.0f - attack, gaussf(spread, 0.72f, 0.22f)};
+    score[CLS_CHAINSAW] = wavg(w, v, 4);
+  }
+  {
+    const float w[] = {3.0f, 2.5f, 2.0f, 3.0f, 1.0f};
+    const float v[] = {attack, flatness, spread, 1.0f - harmonic, loud};
+    score[CLS_GUNSHOT] = wavg(w, v, 5);
+  }
+  {
+    // Постоянный «пол», чтобы никому не приходилось выигрывать по умолчанию,
+    // плюс явная награда за тишину.
+    const float w[] = {2.2f, 2.5f};
+    const float v[] = {0.5f, 1.0f - loud};
+    score[CLS_OTHER] = wavg(w, v, 2);
+  }
+
+  // Тише порога — это фон. Так и говорим, а не гадаем.
+  if (rms < CLS_SILENCE_DB) {
+    for (int i = 0; i < CLS_COUNT; i++) score[i] = (i == CLS_OTHER) ? 1.0f : score[i] * 0.25f;
+  }
+
+  float maxScore = score[0];
+  for (int i = 1; i < CLS_COUNT; i++) if (score[i] > maxScore) maxScore = score[i];
+
+  float e[CLS_COUNT], sum = 0.0f;
+  for (int i = 0; i < CLS_COUNT; i++) { e[i] = expf((score[i] - maxScore) / CLS_TEMPERATURE); sum += e[i]; }
+
+  int top = 0;
+  for (int i = 1; i < CLS_COUNT; i++) if (e[i] > e[top]) top = i;
+
+  lastTop = top;
+  lastConf = (int)lroundf(e[top] / sum * 100.0f);
+
+  // Один кадр — это 64 мс. Выстрел, лай, двигатель тянутся на несколько;
+  // один громкий кадр — это щелчок, дверь, птица, начавшая петь посреди
+  // кадра. Тревога — только когда два кадра подряд говорят одно и то же
+  // (или она уже держится). Сайт применяет то же правило.
+  bool vote = CLS_DANGER[top] && lastConf >= CLS_ALERT_PCT;
+  dangerStreak = vote ? dangerStreak + 1 : 0;
+  lastDanger = vote && (dangerStreak >= 2 || millis() < dangerUntilMs);
+  if (lastDanger) dangerUntilMs = millis() + DANGER_HOLD_MS;
+}
+
+// ─────────────────────────── Светодиод ────────────────────────────
+
+static void led(uint8_t r, uint8_t g, uint8_t b) {
+#if PIN_LED >= 0
+  #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+    rgbLedWrite(PIN_LED, r, g, b);
+  #else
+    neopixelWrite(PIN_LED, r, g, b);
+  #endif
+#else
+  (void)r; (void)g; (void)b;
+#endif
+}
+
+/** Красный, пока держится тревога; иначе цвет по последнему вердикту. */
+static void updateLed() {
+#if PIN_LED >= 0
+  uint32_t now = millis();
+  if (now < dangerUntilMs) {
+    led(LED_BRIGHT, 0, 0);
+    return;
+  }
+  #if PIN_GPS_RX >= 0
+  // GPS подключён, но захвата ещё нет: мигаем жёлтым раз в секунду.
+  if (!gpsFix && gpsLastByteMs != 0 && (now / 500) % 2 == 0) {
+    led(LED_BRIGHT, LED_BRIGHT / 2, 0);
+    return;
+  }
+  #endif
+  if (lastTop == CLS_OTHER) led(0, 0, LED_BRIGHT / 3);
+  else led(0, LED_BRIGHT, 0);
+#endif
+}
+
+// ──────────────────────────── GPS ─────────────────────────────────
+// NMEA разбираем сами: нужны два предложения, библиотека ради них лишняя.
+//   $GxRMC,время,A|V,ddmm.mmmm,N|S,dddmm.mmmm,E|W,скорость,курс,дата,...
+//   $GxGGA,время,ddmm.mmmm,N|S,dddmm.mmmm,E|W,fix,спутников,HDOP,высота,M,...
+// Gx — GP (только GPS), GN (GPS+ГЛОНАСС) и т.п.; префикс нам не важен.
+
+/** ddmm.mmmm → градусы. Пустое поле (нет захвата) даёт 0. */
+static double nmeaToDegrees(const char *field, char hemi) {
+  double raw = atof(field);
+  if (raw == 0.0) return 0.0;
+  int deg = (int)(raw / 100.0);
+  double minutes = raw - deg * 100.0;
+  double result = deg + minutes / 60.0;
+  return (hemi == 'S' || hemi == 'W') ? -result : result;
+}
+
+/** Режет предложение по запятым на месте. Возвращает число полей. */
+static int splitFields(char *line, char *fields[], int maxFields) {
+  int n = 0;
+  char *p = line;
+  fields[n++] = p;
+  while (*p && n < maxFields) {
+    if (*p == ',' || *p == '*') {
+      *p = '\0';
+      fields[n++] = p + 1;
+    }
+    p++;
+  }
+  return n;
+}
+
+static void handleNmea(char *line) {
+  if (strlen(line) < 6 || line[0] != '$') return;
+  const char *type = line + 3;                 // пропускаем "$GP" / "$GN"
+  bool rmc = strncmp(type, "RMC", 3) == 0;
+  bool gga = strncmp(type, "GGA", 3) == 0;
+  if (!rmc && !gga) return;
+
+  char *f[20];
+  int n = splitFields(line, f, 20);
+
+  if (rmc && n >= 7) {
+    bool valid = f[2][0] == 'A';
+    gpsFix = valid;
+    if (valid) {
+      gpsLat = nmeaToDegrees(f[3], f[4][0]);
+      gpsLng = nmeaToDegrees(f[5], f[6][0]);
+    }
+  } else if (gga && n >= 10) {
+    gpsSats = atoi(f[7]);
+    gpsHdop = atof(f[8]);
+    gpsAlt  = atof(f[9]);
+    // GGA приходит чаще RMC у некоторых модулей; координаты берём и отсюда.
+    if (atoi(f[6]) > 0) {
+      gpsFix = true;
+      gpsLat = nmeaToDegrees(f[2], f[3][0]);
+      gpsLng = nmeaToDegrees(f[4], f[5][0]);
+    }
+  }
+}
+
+/** Собирает байты с модуля в предложения. Не блокирует. */
+static void pollGps() {
+#if PIN_GPS_RX >= 0
+  while (GPS.available() > 0) {
+    char c = (char)GPS.read();
+    gpsLastByteMs = millis();
+    if (c == '\n' || c == '\r') {
+      if (nmeaLen > 0) {
+        nmeaBuf[nmeaLen] = '\0';
+        handleNmea(nmeaBuf);
+        nmeaLen = 0;
+      }
+    } else if (nmeaLen < (int)sizeof(nmeaBuf) - 1) {
+      nmeaBuf[nmeaLen++] = c;
+    } else {
+      nmeaLen = 0;
+    }
+  }
+#endif
+}
+
+/** Раз в GPS_REPORT_MS — одна строка о том, где мы и видим ли спутники. */
+static void reportGps() {
+#if PIN_GPS_RX >= 0
+  uint32_t now = millis();
+  if (now - gpsLastReportMs < GPS_REPORT_MS) return;
+  gpsLastReportMs = now;
+
+  bool silent = gpsLastByteMs == 0 || now - gpsLastByteMs > GPS_SILENT_MS;
+  if (silent) {
+    Serial.println("{\"gps\":{\"fix\":false,\"seen\":false}}");
+  } else if (gpsFix) {
+    Serial.printf("{\"gps\":{\"fix\":true,\"lat\":%.6f,\"lng\":%.6f,\"sats\":%d,\"hdop\":%.1f,\"alt\":%.0f}}\n",
+                  gpsLat, gpsLng, gpsSats, gpsHdop, gpsAlt);
+  } else {
+    Serial.printf("{\"gps\":{\"fix\":false,\"sats\":%d}}\n", gpsSats);
+  }
+#endif
+}
+
 /** Заряд в процентах по напряжению на делителе. Раз в две секунды — чаще незачем. */
 static void pollBattery() {
 #if PIN_BATTERY >= 0
@@ -492,6 +863,12 @@ void setup() {
 #if PIN_BATTERY >= 0
   analogReadResolution(12);
 #endif
+#if PIN_GPS_RX >= 0
+  // Кадр звука читается 64 мс с блокировкой; на 9600 бод за это время
+  // приходит ~60 байт, штатного буфера хватает, но запас не помешает.
+  GPS.setRxBufferSize(1024);
+  GPS.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
+#endif
 
   if (!setupI2S()) {
     // Не молчим: без этого «нет данных» и «нет микрофона» выглядят одинаково.
@@ -506,15 +883,19 @@ void setup() {
 
   micSelfTest();
   printHello();
+  led(0, 0, LED_BRIGHT / 3);
 }
 
 void loop() {
   pollCommands();
+  pollGps();
+  reportGps();
   pollBattery();
   if (!readFrame()) return;
 
   // ── громкость и резкость нарастания ──
   float rms = toDb(computeRms(frame, FRAME_LEN));
+  bool printFrame = micDeadThrottle(rms);
 
   float floorDb = rms;
   for (int i = 0; i < historyCount; i++) {
@@ -547,6 +928,10 @@ void loop() {
   float flatness = computeFlatness();
   float spread = computeSpread();
 
+  classifyFrame(rms, zcr, attack, harmonic, flatness, spread);
+  updateLed();
+  if (!printFrame) return;
+
   // ── одна строка JSON ──
   char line[512];
   int n = snprintf(line, sizeof(line),
@@ -556,6 +941,8 @@ void loop() {
   if (batteryPct >= 0) {
     n += snprintf(line + n, sizeof(line) - n, "\"bat\":%d,", batteryPct);
   }
+  n += snprintf(line + n, sizeof(line) - n, "\"top\":\"%s\",\"conf\":%d,\"danger\":%s,",
+                CLS_NAME[lastTop], lastConf, lastDanger ? "true" : "false");
   n += snprintf(line + n, sizeof(line) - n, "\"bands\":[");
 
   for (int b = 0; b < BAND_COUNT && n < (int)sizeof(line) - 12; b++) {

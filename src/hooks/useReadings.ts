@@ -11,12 +11,19 @@ import {
   saveSummaries,
   type SummaryMap,
 } from "@/lib/live/history";
-import { makeReading, mergeReading, type LiveReading } from "@/lib/live/readings";
+import {
+  makeReading,
+  mergeReading,
+  type BoardOpinion,
+  type LiveReading,
+} from "@/lib/live/readings";
 import type { ReadingSource, SoundEvent } from "@/lib/types";
 
 export interface PublishExtras {
   /** Battery percentage the board sent with the frame, if any. */
   battery?: number | null;
+  /** The board's own verdict, if its firmware classifies. */
+  board?: BoardOpinion | null;
 }
 
 export type PublishFeatures = (
@@ -91,7 +98,7 @@ export function useReadings(): ReadingsResult {
       const previous = latest.current[deviceId];
       const merged = mergeReading(
         previous,
-        makeReading(deviceId, source, features, extras?.battery ?? null),
+        makeReading(deviceId, source, features, extras?.battery ?? null, extras?.board ?? null),
       );
       latest.current = { ...latest.current, [deviceId]: merged };
       setReadings(latest.current);

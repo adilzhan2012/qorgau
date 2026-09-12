@@ -7,6 +7,7 @@ export type DeviceStatus = "alert" | "online" | "offline";
 
 /** The sound classes the classifier reports against. */
 export const SOUND_CLASSES = [
+  "nature",
   "animal",
   "dog",
   "vehicle",
@@ -21,12 +22,45 @@ export type SoundClass = (typeof SOUND_CLASSES)[number];
 export type Classification = Record<SoundClass, number>;
 
 export const SOUND_CLASS_LABELS: Record<SoundClass, string> = {
-  animal: "Животное",
+  nature: "Природа",
+  animal: "Птицы, звери",
   dog: "Собака",
   vehicle: "Транспорт",
   chainsaw: "Бензопила",
   gunshot: "Выстрел",
-  other: "Другое",
+  other: "Тишина",
+};
+
+/** A word more about each class, for tooltips and the about page. */
+export const SOUND_CLASS_HINTS: Record<SoundClass, string> = {
+  nature: "листва, ветер, вода, дождь",
+  animal: "птичье пение, крики зверей",
+  dog: "лай — рядом человек",
+  vehicle: "двигатель машины, мотоцикла",
+  chainsaw: "бензопила, незаконная рубка",
+  gunshot: "выстрел, браконьеры",
+  other: "фон, ничего заметного",
+};
+
+/**
+ * What a class means for the park. The site alerts on danger; the board sends
+ * the same flag so a LoRa packet of a few bytes is enough to raise the alarm.
+ */
+export type Safety = "safe" | "danger";
+
+export const SOUND_SAFETY: Record<SoundClass, Safety> = {
+  nature: "safe",
+  animal: "safe",
+  other: "safe",
+  dog: "danger",
+  vehicle: "danger",
+  chainsaw: "danger",
+  gunshot: "danger",
+};
+
+export const SAFETY_LABELS: Record<Safety, string> = {
+  safe: "безопасно",
+  danger: "опасно",
 };
 
 /** Where a reading came from. */
@@ -64,6 +98,11 @@ export interface DeviceRecord {
   createdAt: number;
   /** How the record came to exist. Boards announce themselves; people type. */
   origin: "manual" | "board";
+  /**
+   * Take the position from the board's GPS whenever it has a fix. On by
+   * default for devices a board created — their initial spot was arbitrary.
+   */
+  followGps: boolean;
 }
 
 export interface Device extends DeviceRecord {

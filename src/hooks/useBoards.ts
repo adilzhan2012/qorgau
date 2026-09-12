@@ -10,7 +10,9 @@ import {
   requestPort,
   watchPorts,
   type BoardFrame,
+  type BoardGps,
   type BoardHello,
+  type BoardVerdict,
   type SerialHandle,
   type SerialPortLike,
 } from "@/lib/audio/serialSensor";
@@ -36,6 +38,10 @@ export interface Board {
   /** ms since epoch of the last frame, 0 before the first. */
   lastAt: number;
   battery: number | null;
+  /** Null until the firmware has said anything about GPS (older firmware never does). */
+  gps: BoardGps | null;
+  /** The board's own latest decision; null for firmware that does not classify. */
+  verdict: BoardVerdict | null;
 }
 
 export interface BoardsOptions {
@@ -49,6 +55,8 @@ export interface BoardsOptions {
   hasDevice: (deviceId: string) => boolean;
   /** For firmware that sends no id at all. */
   fallbackDeviceId: string | null;
+  /** A GPS fix for the device this board feeds. Called at most every few seconds. */
+  onFix: (deviceId: string, point: { lat: number; lng: number }) => void;
 }
 
 export interface BoardsResult {
@@ -180,6 +188,8 @@ export function useBoards(options: BoardsOptions): BoardsResult {
           frames: 0,
           lastAt: 0,
           battery: null,
+          gps: null,
+          verdict: null,
         },
       };
       slots.current.set(key, slot);
@@ -199,22 +209,35 @@ export function useBoards(options: BoardsOptions): BoardsResult {
         flush();
       };
 
+      const onGps = (gps: BoardGps) => {
+        slot.board.gps = gps;
+        if (gps.fix && gps.lat !== null && gps.lng !== null && slot.board.deviceId) {
+          opts.current.onFix(slot.board.deviceId, { lat: gps.lat, lng: gps.lng });
+        }
+        flush();
+      };
+
       const onFrame = (frame: BoardFrame) => {
         identify(frame.boardId);
         slot.board.frames += 1;
         slot.board.lastAt = Date.now();
         if (frame.battery !== null) slot.board.battery = frame.battery;
+        if (frame.verdict) slot.board.verdict = frame.verdict;
 
         const target = slot.board.deviceId ?? opts.current.fallbackDeviceId;
         if (!target) return;
         if (slot.board.deviceId === null) slot.board.deviceId = target;
-        opts.current.publish(target, "esp32", frame.features, { battery: frame.battery });
+        opts.current.publish(target, "esp32", frame.features, {
+          battery: frame.battery,
+          board: frame.verdict,
+        });
       };
 
       try {
         slot.handle = await openPort(port, {
           onFrame,
           onHello,
+          onGps,
           onError: (message) => {
             slot.board.state = "error";
             slot.board.error = friendlyError(message);

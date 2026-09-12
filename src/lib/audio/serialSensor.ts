@@ -1,4 +1,5 @@
 import { parseFeatures, type Features } from "./features";
+import { SOUND_CLASSES, type SoundClass } from "@/lib/types";
 
 /**
  * Reads the ESP32 over USB straight from the page, using Web Serial.
@@ -76,6 +77,15 @@ export function watchPorts(handlers: {
   };
 }
 
+/** What the board itself decided about the frame. Firmware 1.3 and up. */
+export interface BoardVerdict {
+  top: SoundClass;
+  /** 0–100. */
+  conf: number;
+  /** The board's own alarm: a dangerous class it is confident about. */
+  danger: boolean;
+}
+
 /** One frame of measurements from the board. */
 export interface BoardFrame {
   /** The id the board reports as, or null for firmware that sends none. */
@@ -83,6 +93,8 @@ export interface BoardFrame {
   features: Features;
   /** 0–100 when the board measures its battery; otherwise null. */
   battery: number | null;
+  /** Null for firmware that only measures and leaves the verdict to the site. */
+  verdict: BoardVerdict | null;
 }
 
 /** The board introducing itself: printed at boot and on request. */
@@ -91,6 +103,20 @@ export interface BoardHello {
   firmware: string | null;
   /** "ok" or the self-test complaint; null when the firmware predates it. */
   mic: string | null;
+}
+
+/** Where the board is, as far as its GPS module can tell. */
+export interface BoardGps {
+  /** False while the module has not reported a single byte: check TX→RX. */
+  seen: boolean;
+  fix: boolean;
+  lat: number | null;
+  lng: number | null;
+  /** Satellites in view; meaningful even before a fix. */
+  sats: number;
+  hdop: number | null;
+  /** Metres above sea level. */
+  alt: number | null;
 }
 
 export interface SerialHandle {
@@ -105,6 +131,7 @@ export interface SerialOptions {
   baudRate?: number;
   onFrame: (frame: BoardFrame) => void;
   onHello?: (hello: BoardHello) => void;
+  onGps?: (gps: BoardGps) => void;
   onError?: (message: string) => void;
   onClose?: () => void;
 }
@@ -227,16 +254,43 @@ function handleLine(line: string, options: SerialOptions): void {
     return;
   }
 
+  if (packet.gps && typeof packet.gps === "object") {
+    const g = packet.gps as Record<string, unknown>;
+    const lat = Number(g.lat);
+    const lng = Number(g.lng);
+    const fix = g.fix === true && Number.isFinite(lat) && Number.isFinite(lng);
+    const hdop = Number(g.hdop);
+    const alt = Number(g.alt);
+    options.onGps?.({
+      seen: g.seen !== false,
+      fix,
+      lat: fix ? lat : null,
+      lng: fix ? lng : null,
+      sats: Number.isFinite(Number(g.sats)) ? Number(g.sats) : 0,
+      hdop: Number.isFinite(hdop) ? hdop : null,
+      alt: Number.isFinite(alt) ? alt : null,
+    });
+    return;
+  }
+
   // Packets come from firmware, so nothing is trusted: anything without a
   // usable feature vector is skipped rather than treated as an error.
   const features = parseFeatures(packet);
   if (!features) return;
 
   const bat = Number(packet.bat);
+  const conf = Number(packet.conf);
+  const top = packet.top;
+  const verdict: BoardVerdict | null =
+    typeof top === "string" && (SOUND_CLASSES as readonly string[]).includes(top) && Number.isFinite(conf)
+      ? { top: top as SoundClass, conf: Math.max(0, Math.min(100, Math.round(conf))), danger: packet.danger === true }
+      : null;
+
   options.onFrame({
     boardId: idOf(packet),
     features,
     battery: Number.isFinite(bat) ? Math.max(0, Math.min(100, Math.round(bat))) : null,
+    verdict,
   });
 }
 

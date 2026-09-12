@@ -1,31 +1,50 @@
 [
   {
-    "file": "ambient-forest.wav",
-    "name": "ambient-forest",
-    "expected": "other",
-    "expectedLabel": "Другое"
+    "file": "bird-demo.wav",
+    "name": "bird-demo",
+    "title": "Птица",
+    "expected": "animal",
+    "expectedLabel": "Птицы, звери"
   },
   {
     "file": "chainsaw-demo.wav",
     "name": "chainsaw-demo",
+    "title": "Бензопила",
     "expected": "chainsaw",
     "expectedLabel": "Бензопила"
   },
   {
     "file": "dog-demo.wav",
     "name": "dog-demo",
+    "title": "Лай собаки",
     "expected": "dog",
     "expectedLabel": "Собака"
   },
   {
     "file": "gunshot-demo.wav",
     "name": "gunshot-demo",
+    "title": "Выстрел",
     "expected": "gunshot",
     "expectedLabel": "Выстрел"
   },
   {
+    "file": "nature-leaves.wav",
+    "name": "nature-leaves",
+    "title": "Листва на ветру",
+    "expected": "nature",
+    "expectedLabel": "Природа"
+  },
+  {
+    "file": "nature-waterfall.wav",
+    "name": "nature-waterfall",
+    "title": "Водопад",
+    "expected": "nature",
+    "expectedLabel": "Природа"
+  },
+  {
     "file": "vehicle-demo.wav",
     "name": "vehicle-demo",
+    "title": "Машина",
     "expected": "vehicle",
     "expectedLabel": "Транспорт"
   }

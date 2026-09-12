@@ -5,7 +5,13 @@ import { useMemo } from "react";
 import { Header } from "@/components/Header";
 import { classify, explain } from "@/lib/audio/classify";
 import { FeatureExtractor, type Features } from "@/lib/audio/features";
-import { SOUND_CLASS_LABELS, topSoundClass, type SoundClass } from "@/lib/types";
+import {
+  SAFETY_LABELS,
+  SOUND_CLASS_LABELS,
+  SOUND_SAFETY,
+  topSoundClass,
+  type SoundClass,
+} from "@/lib/types";
 
 /**
  * Runs the classifier against synthesised signals whose class we know, and
@@ -96,6 +102,20 @@ const CASES: Case[] = [
       }),
   },
   {
+    expect: "nature",
+    name: "листва на ветру",
+    build: () =>
+      render(6, (t) => {
+        const gust = 0.55 + 0.45 * Math.sin(2 * Math.PI * 0.4 * t + 1);
+        return noise() * 0.12 * gust;
+      }),
+  },
+  {
+    expect: "nature",
+    name: "водопад (громкий ровный шум)",
+    build: () => render(6, () => noise() * 0.5),
+  },
+  {
     expect: "animal",
     name: "птица (тональный свист)",
     build: () =>
@@ -130,6 +150,7 @@ export default function SelfTestPage() {
           name,
           expectLabel: SOUND_CLASS_LABELS[expect],
           gotLabel: SOUND_CLASS_LABELS[top.name],
+          danger: SOUND_SAFETY[top.name] === "danger",
           confidence: top.value,
           pass: top.name === expect,
           why: explain(features, top.name),
@@ -149,7 +170,7 @@ export default function SelfTestPage() {
       <main className="mx-auto max-w-[860px] px-5 pb-20 pt-10 sm:px-8">
         <h1 className="text-[32px] font-semibold tracking-tightest">Проверка классификатора</h1>
         <p className="mt-3 max-w-[62ch] text-[15px] leading-relaxed text-muted">
-          Шесть звуков синтезируются прямо в браузере, и правильный ответ для каждого известен
+          Восемь звуков синтезируются прямо в браузере, и правильный ответ для каждого известен
           заранее. Классификатор их не видел — он получает те же признаки, что приходят с платы.
           Обновите страницу: сигналы генерируются заново со случайным шумом.
         </p>
@@ -178,6 +199,13 @@ export default function SelfTestPage() {
               <div className="mt-3 flex items-baseline gap-3">
                 <span className="text-[24px] font-semibold tabular-nums">{r.confidence}%</span>
                 <span className="text-[15px] text-muted">{r.gotLabel}</span>
+                <span
+                  className={`rounded-full px-2 py-[3px] text-[11px] font-semibold uppercase tracking-[0.06em] ${
+                    r.danger ? "bg-alarm-soft text-alarm" : "bg-accent-soft text-accent"
+                  }`}
+                >
+                  {r.danger ? SAFETY_LABELS.danger : SAFETY_LABELS.safe}
+                </span>
               </div>
 
               {r.why.length > 0 && (

@@ -28,7 +28,12 @@ export interface Features {
 }
 
 export const BAND_COUNT = 16;
-export const FFT_SIZE = 512;
+/**
+ * The whole frame, not half of it. With a 512-point window over a 1024-sample
+ * frame the spectrum came from the first 32 ms while the level came from all
+ * 64 — and a bird starting mid-frame read as "loud, flat, sudden": a gunshot.
+ */
+export const FFT_SIZE = 1024;
 export const BAND_LOW_HZ = 60;
 export const BAND_HIGH_HZ = 8000;
 
@@ -88,8 +93,14 @@ export class FeatureExtractor {
     for (const past of this.history) floor = Math.min(floor, past);
     const attack = clamp01((rms - floor) / 24);
 
-    this.history.push(rms);
-    if (this.history.length > FeatureExtractor.HISTORY) this.history.shift();
+    // Exact digital silence is not a quiet room — it is the analyser before
+    // audio starts flowing, or a file's leading zeros. A microphone always
+    // has a noise floor. Measuring a waterfall's first frame against nothing
+    // would call it a gunshot.
+    if (rms > SILENCE_DB + 0.5) {
+      this.history.push(rms);
+      if (this.history.length > FeatureExtractor.HISTORY) this.history.shift();
+    }
 
     return { rms, zcr, attack, harmonic, flatness, spread, bands };
   }

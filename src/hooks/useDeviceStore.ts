@@ -12,8 +12,9 @@ import {
 } from "@/lib/devices/store";
 import type { DeviceRecord } from "@/lib/types";
 
-export type DeviceInput = Omit<DeviceRecord, "createdAt" | "origin"> & {
+export type DeviceInput = Omit<DeviceRecord, "createdAt" | "origin" | "followGps"> & {
   origin?: DeviceRecord["origin"];
+  followGps?: boolean;
 };
 
 export interface DeviceStore {
@@ -22,7 +23,10 @@ export interface DeviceStore {
   hydrated: boolean;
   /** Returns the stored record. Throws if the id is taken. */
   add: (input: DeviceInput) => DeviceRecord;
-  update: (id: string, patch: Partial<Pick<DeviceRecord, "name" | "lat" | "lng">>) => void;
+  update: (
+    id: string,
+    patch: Partial<Pick<DeviceRecord, "name" | "lat" | "lng" | "followGps">>,
+  ) => void;
   remove: (id: string) => void;
   /** The next free QRG-NNN. */
   suggestId: () => string;
@@ -78,13 +82,16 @@ export function useDeviceStore(): DeviceStore {
       if (latest.current.some((device) => device.id === id)) {
         throw new Error(`Устройство ${id} уже есть`);
       }
+      const origin = input.origin ?? "manual";
       const record: DeviceRecord = {
         id,
         name: input.name.trim() || id,
         lat: input.lat,
         lng: input.lng,
         createdAt: Date.now(),
-        origin: input.origin ?? "manual",
+        origin,
+        // A board-made device was dropped at the map centre; its GPS knows better.
+        followGps: input.followGps ?? origin === "board",
       };
       commit([...latest.current, record]);
       return record;

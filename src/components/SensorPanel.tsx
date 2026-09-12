@@ -9,8 +9,10 @@ import { playSample, startMicrophone, type SourceHandle } from "@/lib/audio/sour
 import { withBasePath } from "@/lib/basePath";
 import { plural } from "@/lib/time";
 import {
+  SAFETY_LABELS,
   SOUND_CLASSES,
   SOUND_CLASS_LABELS,
+  SOUND_SAFETY,
   topSoundClass,
   type Device,
 } from "@/lib/types";
@@ -19,6 +21,8 @@ import {
 interface SampleFile {
   file: string;
   name: string;
+  /** Set for the built-in synthesised sounds. */
+  title?: string | null;
   expected: string | null;
   expectedLabel: string | null;
 }
@@ -43,6 +47,13 @@ const buttonClass =
 
 const selectClass =
   "w-full rounded-xl bg-raised px-3 py-2 text-[13px] text-ink outline-none focus:ring-2 focus:ring-accent/60";
+
+/** " · GPS 7 спутников" and the like; nothing for firmware without GPS. */
+function gpsNote(board: Board): string {
+  if (!board.gps) return "";
+  if (board.gps.fix) return ` · GPS ${board.gps.sats} ${plural(board.gps.sats, "спутник", "спутника", "спутников")}`;
+  return board.gps.seen ? " · GPS ищет спутники" : " · GPS молчит";
+}
 
 /** A board and what its device is hearing, on one row. */
 function BoardRow({
@@ -93,16 +104,27 @@ function BoardRow({
                     ? "жду первый кадр…"
                     : quiet
                       ? "кадры не идут"
-                      : `${board.frames} кадров${board.battery !== null ? ` · ${board.battery}%` : ""}`}
+                      : `${board.frames} кадров${board.battery !== null ? ` · ${board.battery}%` : ""}${gpsNote(board)}`}
             </span>
           </span>
         </button>
 
         <div className="flex shrink-0 items-center gap-2">
-          {device && top && board.state === "listening" && (
+          {/* The board's own verdict when it has one — that is what a LoRa
+              packet would carry — otherwise the site's. */}
+          {board.state === "listening" && (board.verdict || (device && top)) && (
             <span className="text-right">
-              <span className="block text-[12px] font-medium">{SOUND_CLASS_LABELS[top.name]}</span>
-              <span className="block text-[11px] tabular-nums text-muted">{top.value}%</span>
+              <span
+                className={`block text-[12px] font-medium ${
+                  board.verdict?.danger ? "text-alarm" : ""
+                }`}
+              >
+                {SOUND_CLASS_LABELS[board.verdict ? board.verdict.top : top!.name]}
+              </span>
+              <span className="block text-[11px] tabular-nums text-muted">
+                {board.verdict ? board.verdict.conf : top!.value}% ·{" "}
+                {SAFETY_LABELS[SOUND_SAFETY[board.verdict ? board.verdict.top : top!.name]]}
+              </span>
             </span>
           )}
           <button
@@ -402,6 +424,15 @@ export function SensorPanel({
             <div className="flex items-baseline justify-between gap-3">
               <span className="min-w-0 truncate text-[17px] font-medium tracking-tightest">
                 {live && top ? SOUND_CLASS_LABELS[top.name] : target ? target.name : "—"}
+                {live && top && (
+                  <span
+                    className={`ml-2 align-middle text-[11px] font-semibold uppercase tracking-[0.06em] ${
+                      SOUND_SAFETY[top.name] === "danger" ? "text-alarm" : "text-accent"
+                    }`}
+                  >
+                    {SAFETY_LABELS[SOUND_SAFETY[top.name]]}
+                  </span>
+                )}
               </span>
               <span className="text-[22px] font-semibold tabular-nums">
                 {live && top ? `${top.value}%` : "—"}
@@ -493,7 +524,7 @@ export function SensorPanel({
                         : "bg-raised text-ink hover:bg-raised/70"
                     }`}
                   >
-                    {sample.expectedLabel ?? sample.name}
+                    {sample.title ?? sample.expectedLabel ?? sample.name}
                   </button>
                 ))}
               </div>

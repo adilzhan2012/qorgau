@@ -35,13 +35,20 @@ const SOURCES: ReadonlySet<string> = new Set(["esp32", "mic", "sample"]);
 function toClassification(raw: unknown): Classification | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
+  // A class added later is simply missing from older records: read as 0,
+  // as long as the record has at least one real number in it.
   const out = {} as Classification;
+  let present = false;
   for (const name of SOUND_CLASSES) {
     const n = Number(o[name]);
-    if (!Number.isFinite(n)) return null;
-    out[name] = Math.max(0, Math.min(100, n));
+    if (Number.isFinite(n)) {
+      out[name] = Math.max(0, Math.min(100, n));
+      present = true;
+    } else {
+      out[name] = 0;
+    }
   }
-  return out;
+  return present ? out : null;
 }
 
 function isSoundClass(value: unknown): value is SoundClass {

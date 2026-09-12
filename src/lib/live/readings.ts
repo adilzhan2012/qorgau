@@ -40,10 +40,17 @@ export interface LiveReading {
   battery: number | null;
   /** While this is in the future the device stays in `alert`. */
   alertUntil: number;
+  /**
+   * The dangerous class this one frame voted for, confirmed or not. An alert
+   * needs two frames in a row: see `mergeReading`.
+   */
+  candidate: SoundClass | null;
 }
 
 /** A gunshot lasts 200 ms. Hold the alert long enough to be seen. */
 export const ALERT_HOLD_MS = 8000;
+
+
 
 /**
  * An alert needs a confident verdict, not merely a winning one — otherwise
@@ -51,12 +58,26 @@ export const ALERT_HOLD_MS = 8000;
  */
 const ALERT_THRESHOLD = 40;
 
-/** Classifies one frame of features into a reading. */
+/** What the board decided on its own, when its firmware classifies. */
+export interface BoardOpinion {
+  top: SoundClass;
+  conf: number;
+  danger: boolean;
+}
+
+/**
+ * Classifies one frame of features into a reading.
+ *
+ * The board's own verdict, when it sends one, can raise an alert by itself:
+ * in the field that flag is all a LoRa packet carries, so the site must act
+ * on it even if its own copy of the classifier is a shade less sure.
+ */
 export function makeReading(
   deviceId: string,
   source: ReadingSource,
   features: Features,
   battery: number | null = null,
+  board: BoardOpinion | null = null,
   at: number = Date.now(),
 ): LiveReading {
   const classification = classify(features);
@@ -79,25 +100,44 @@ export function makeReading(
       source,
       battery,
       alertUntil: 0,
+      candidate: null,
     };
   }
 
-  const alerting = isAlertClass(top.name) && top.value >= ALERT_THRESHOLD;
+  const ownAlert = isAlertClass(top.name) && top.value >= ALERT_THRESHOLD;
+  const boardAlert = board !== null && board.danger && isAlertClass(board.top);
+  const alerting = ownAlert || boardAlert;
+
+  // The site's own verdict when it alerts; otherwise the board's.
+  const verdict = ownAlert || !boardAlert ? top.name : board.top;
+  const verdictValue = ownAlert || !boardAlert ? top.value : board.conf;
 
   return {
     deviceId,
     at,
     classification,
-    top: top.name,
-    topValue: top.value,
-    status: alerting ? "alert" : "online",
-    soundType: alerting ? SOUND_CLASS_LABELS[top.name] : null,
-    reasons: explain(features, top.name),
+    top: verdict,
+    topValue: verdictValue,
+    // Provisional: `mergeReading` promotes it to an alert once a second frame agrees.
+    status: "online",
+    soundType: null,
+    reasons: explain(features, verdict),
     rms: features.rms,
     bands: features.bands,
     source,
     battery,
-    alertUntil: alerting ? at + ALERT_HOLD_MS : 0,
+    alertUntil: 0,
+    candidate: alerting ? verdict : null,
+  };
+}
+
+/** The reading as an alert: latched, labelled, held. */
+function promote(reading: LiveReading, at: number): LiveReading {
+  return {
+    ...reading,
+    status: "alert",
+    soundType: SOUND_CLASS_LABELS[reading.top],
+    alertUntil: at + ALERT_HOLD_MS,
   };
 }
 
@@ -116,6 +156,19 @@ export function mergeReading(
   incoming: LiveReading,
 ): LiveReading {
   const holding = previous !== undefined && previous.alertUntil > incoming.at;
+
+  // A candidate becomes an alert when the previous frame voted the same way,
+  // or while an alert is already latched (a louder frame of the same event).
+  // Frames are 64 ms: a gunshot's crack, a bark, an engine all span several,
+  // while a single loud frame is a click, a door, a bird starting mid-frame.
+  // Two agreeing frames is the cheapest filter that tells them apart; the
+  // firmware applies the same rule to its LED and its `danger` flag.
+  const confirmed =
+    incoming.candidate !== null &&
+    previous !== undefined &&
+    (holding || previous.candidate === incoming.candidate);
+  if (confirmed) incoming = promote(incoming, incoming.at);
+
   if (!holding || !previous) {
     // A board without a battery sensor says nothing about it; keep the last
     // figure it did report rather than flickering to "unknown".
