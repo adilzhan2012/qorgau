@@ -71,12 +71,13 @@ export const SAFETY_LABELS: Record<Safety, string> = {
 };
 
 /** Where a reading came from. */
-export type ReadingSource = "esp32" | "mic" | "sample";
+export type ReadingSource = "esp32" | "mic" | "sample" | "camera";
 
 export const SOURCE_LABELS: Record<ReadingSource, string> = {
   esp32: "ESP32 · INMP441",
   mic: "микрофон ноутбука",
   sample: "проигрывание файла",
+  camera: "камера ноутбука",
 };
 
 /** What a device is hearing right now, when something is listening. */

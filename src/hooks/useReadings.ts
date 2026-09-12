@@ -45,6 +45,12 @@ export interface ReadingsResult {
   /** Removes everything remembered about a device. */
   forget: (deviceId: string) => void;
   clearEvents: () => void;
+  /**
+   * Камера подтвердила человека. Отдельный путь, а не подделка признаков:
+   * у картинки нет ни спектра, ни громкости, и класть её в тот же вердикт
+   * значило бы врать о том, чем он получен.
+   */
+  logCamera: (deviceId: string, score: number) => void;
 }
 
 /** Summaries are written this often at most; frames arrive ~15×/s. */
@@ -163,6 +169,24 @@ export function useReadings(): ReadingsResult {
     [scheduleSave],
   );
 
+  const logCamera = useCallback((deviceId: string, score: number) => {
+    const at = Date.now();
+    eventsRef.current = [
+      ...eventsRef.current,
+      {
+        id: eventId(at),
+        deviceId,
+        at,
+        sound: "voice" as const,
+        value: Math.round(score * 100),
+        source: "camera" as const,
+        reasons: ["камера видит человека в кадре"],
+      },
+    ].slice(-MAX_EVENTS);
+    saveEvents(eventsRef.current);
+    setEvents(eventsRef.current);
+  }, []);
+
   const forget = useCallback((deviceId: string) => {
     const { [deviceId]: _dropped, ...rest } = latest.current;
     latest.current = rest;
@@ -185,7 +209,7 @@ export function useReadings(): ReadingsResult {
   }, []);
 
   return useMemo(
-    () => ({ readings, summaries, events, publish, forget, clearEvents }),
-    [readings, summaries, events, publish, forget, clearEvents],
+    () => ({ readings, summaries, events, publish, forget, clearEvents, logCamera }),
+    [readings, summaries, events, publish, forget, clearEvents, logCamera],
   );
 }

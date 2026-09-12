@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { Board, BoardsResult } from "@/hooks/useBoards";
+import { CameraPanel } from "@/components/CameraPanel";
 import type { PublishFeatures } from "@/hooks/useReadings";
 import { bandLabel } from "@/lib/audio/features";
 import { playSample, startMicrophone, type SourceHandle } from "@/lib/audio/sources";
@@ -43,6 +44,8 @@ interface SensorPanelProps {
   target: Device | null;
   /** Where every frame of features goes. */
   publish: PublishFeatures;
+  /** Камера подтвердила человека — в журнал тревог. */
+  onCameraPerson: (score: number) => void;
   onSelectDevice: (id: string) => void;
   /** Tells the parent whether the microphone is on, for the header pill. */
   onMicChange: (on: boolean) => void;
@@ -198,6 +201,7 @@ export function SensorPanel({
   onSensorDeviceChange,
   target,
   publish,
+  onCameraPerson,
   onSelectDevice,
   onMicChange,
 }: SensorPanelProps) {
@@ -563,6 +567,9 @@ export function SensorPanel({
               </div>
             )}
           </div>
+
+          {/* Камера: второй, независимый ответ на вопрос «есть ли человек». */}
+          <CameraPanel onPerson={onCameraPerson} />
         </div>
       )}
     </div>
