@@ -41,9 +41,9 @@
  * Микрофон работает только с ESP32-S3.
  *
  * ── Микрофон: INMP441 или ICS-43434 (одинаковая распиновка) ─────────
- *      VDD  → 3V3            SCK (BCLK) → GPIO4
- *      GND  → GND            WS  (LRCL) → GPIO5
- *      L/R  → GND            SD  (DOUT) → GPIO6
+ *      VDD  → 3V3            SCK (BCLK) → GPIO14
+ *      GND  → GND            WS  (LRCL) → GPIO15
+ *      L/R  → GND            SD  (DOUT) → GPIO16
  *   Ножка L/R выбирает, в каком из двух слотов I2S микрофон отдаёт данные.
  *   В каком именно — зависит и от микрофона, и от версии драйвера, и в
  *   интернете на этот счёт спорят. Поэтому плата читает ОБА слота и сама
@@ -99,9 +99,9 @@
 
 #define FW_VERSION  "1.5"
 #define DEFAULT_ID  "QRG-001"   // ID до того, как сайт запишет свой
-#define PIN_BCLK    4           // SCK на модуле микрофона
-#define PIN_LRCL    5           // WS
-#define PIN_DOUT    6           // SD
+#define PIN_BCLK    14          // SCK на модуле микрофона
+#define PIN_LRCL    15          // WS
+#define PIN_DOUT    16          // SD
 
 // Встроенный RGB-светодиод (WS2812). На ESP32-S3-DevKitC-1 это GPIO48, на
 // части плат — GPIO38. -1 — не использовать. Зелёный — безопасно, красный —
@@ -545,7 +545,8 @@ static bool micDeadThrottle(float rms) {
   if (now - lastNagMs >= 5000) {
     lastNagMs = now;
     if (micSlot < 0) {
-      strlcpy(micStatus, "линия SD залипла в обоих слотах: проверьте SD→GPIO6, VDD→3V3 и GND", sizeof(micStatus));
+      snprintf(micStatus, sizeof(micStatus),
+               "линия SD залипла в обоих слотах: проверьте SD→GPIO%d, VDD→3V3 и GND", PIN_DOUT);
     } else {
       snprintf(micStatus, sizeof(micStatus),
                "слот %d живой, но уровень на нуле: проверьте VDD→3V3 и GND", micSlot);

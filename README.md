@@ -256,8 +256,8 @@ npm run dev
 | **INMP441** или **ICS-43434** | цифровой I2S-микрофон — любой из двух, распиновка одинаковая |
 | **GPS-модуль** с UART (NEO-6M, NEO-M8N, ATGM336H…) | координаты датчика; необязателен |
 
-Микрофон: `VDD→3V3`, `GND→GND`, `L/R→GND`, `SCK/BCLK→GPIO4`, `WS/LRCL→GPIO5`,
-`SD/DOUT→GPIO6`. GPS: `VCC→3V3`, `GND→GND`, `TX→GPIO18`, `RX→GPIO17`
+Микрофон: `VDD→3V3`, `GND→GND`, `L/R→GND`, `SCK/BCLK→GPIO14`, `WS/LRCL→GPIO15`,
+`SD/DOUT→GPIO16`. GPS: `VCC→3V3`, `GND→GND`, `TX→GPIO18`, `RX→GPIO17`
 (последний можно не подключать). Пины меняются `#define`-ами в начале скетча.
 **Не используйте GPIO 33–37** — на S3 они заняты PSRAM.
 
