@@ -1,0 +1,65 @@
+[
+  {
+    "file": "bird-demo.wav",
+    "name": "bird-demo",
+    "title": "Птица (тональный свист)",
+    "expected": "animal",
+    "expectedLabel": "Птицы, звери"
+  },
+  {
+    "file": "chainsaw-demo.wav",
+    "name": "chainsaw-demo",
+    "title": "Бензопила",
+    "expected": "chainsaw",
+    "expectedLabel": "Бензопила"
+  },
+  {
+    "file": "dog-demo.wav",
+    "name": "dog-demo",
+    "title": "Лай собаки",
+    "expected": "dog",
+    "expectedLabel": "Собака"
+  },
+  {
+    "file": "gunshot-demo.wav",
+    "name": "gunshot-demo",
+    "title": "Выстрел",
+    "expected": "gunshot",
+    "expectedLabel": "Выстрел"
+  },
+  {
+    "file": "nature-leaves.wav",
+    "name": "nature-leaves",
+    "title": "Листва на ветру",
+    "expected": "nature",
+    "expectedLabel": "Природа"
+  },
+  {
+    "file": "nature-waterfall.wav",
+    "name": "nature-waterfall",
+    "title": "Водопад (громкий ровный шум)",
+    "expected": "nature",
+    "expectedLabel": "Природа"
+  },
+  {
+    "file": "quiet-demo.wav",
+    "name": "quiet-demo",
+    "title": "Тишина (фон леса)",
+    "expected": "other",
+    "expectedLabel": "Тишина"
+  },
+  {
+    "file": "vehicle-demo.wav",
+    "name": "vehicle-demo",
+    "title": "Машина (гул двигателя)",
+    "expected": "vehicle",
+    "expectedLabel": "Транспорт"
+  },
+  {
+    "file": "voice-demo.wav",
+    "name": "voice-demo",
+    "title": "Человек (речь)",
+    "expected": null,
+    "expectedLabel": null
+  }
+]
