@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Features } from "@/lib/audio/features";
+import { ListeningWindow } from "@/lib/audio/window";
 import {
   MAX_EVENTS,
   loadEvents,
@@ -44,6 +45,12 @@ export interface ReadingsResult {
   /** Removes everything remembered about a device. */
   forget: (deviceId: string) => void;
   clearEvents: () => void;
+  /**
+   * Камера подтвердила человека. Отдельный путь, а не подделка признаков:
+   * у картинки нет ни спектра, ни громкости, и класть её в тот же вердикт
+   * значило бы врать о том, чем он получен.
+   */
+  logCamera: (deviceId: string, score: number) => void;
 }
 
 /** Summaries are written this often at most; frames arrive ~15×/s. */
@@ -70,6 +77,9 @@ export function useReadings(): ReadingsResult {
   const [events, setEvents] = useState<SoundEvent[]>([]);
 
   const latest = useRef<Record<string, LiveReading>>({});
+  // A second and a half of memory per device: the classifier looks at a window
+  // rather than a frame, and every board has its own.
+  const windows = useRef<Record<string, ListeningWindow>>({});
   const summaryRef = useRef<SummaryMap>({});
   const eventsRef = useRef<SoundEvent[]>([]);
   const saveTimer = useRef<number | null>(null);
@@ -96,9 +106,17 @@ export function useReadings(): ReadingsResult {
   const publish = useCallback<PublishFeatures>(
     (deviceId, source, features, extras) => {
       const previous = latest.current[deviceId];
+      const window = (windows.current[deviceId] ??= new ListeningWindow());
       const merged = mergeReading(
         previous,
-        makeReading(deviceId, source, features, extras?.battery ?? null, extras?.board ?? null),
+        makeReading(
+          deviceId,
+          source,
+          features,
+          window.push(features),
+          extras?.battery ?? null,
+          extras?.board ?? null,
+        ),
       );
       latest.current = { ...latest.current, [deviceId]: merged };
       setReadings(latest.current);
@@ -151,10 +169,29 @@ export function useReadings(): ReadingsResult {
     [scheduleSave],
   );
 
+  const logCamera = useCallback((deviceId: string, score: number) => {
+    const at = Date.now();
+    eventsRef.current = [
+      ...eventsRef.current,
+      {
+        id: eventId(at),
+        deviceId,
+        at,
+        sound: "voice" as const,
+        value: Math.round(score * 100),
+        source: "camera" as const,
+        reasons: ["камера видит человека в кадре"],
+      },
+    ].slice(-MAX_EVENTS);
+    saveEvents(eventsRef.current);
+    setEvents(eventsRef.current);
+  }, []);
+
   const forget = useCallback((deviceId: string) => {
     const { [deviceId]: _dropped, ...rest } = latest.current;
     latest.current = rest;
     setReadings(rest);
+    delete windows.current[deviceId];
 
     delete summaryRef.current[deviceId];
     saveSummaries(summaryRef.current);
@@ -172,7 +209,7 @@ export function useReadings(): ReadingsResult {
   }, []);
 
   return useMemo(
-    () => ({ readings, summaries, events, publish, forget, clearEvents }),
-    [readings, summaries, events, publish, forget, clearEvents],
+    () => ({ readings, summaries, events, publish, forget, clearEvents, logCamera }),
+    [readings, summaries, events, publish, forget, clearEvents, logCamera],
   );
 }

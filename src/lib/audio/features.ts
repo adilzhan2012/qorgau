@@ -12,7 +12,15 @@ export interface Features {
   rms: number;
   /** Zero-crossing rate, 0..1. High for noise and hiss, low for rumble. */
   zcr: number;
-  /** How sharply the level rose into this frame, 0..1. A gunshot is ~1. */
+  /**
+   * How sharply the level rose into this frame, 0..1. A gunshot is ~1.
+   *
+   * The classifier no longer reads this one: it measures the rise across the
+   * whole window instead, which survives a recording that opens on the event
+   * itself (this field is 0 there — the first frames have nothing to rise
+   * above). It stays because the board reports it and it is the fastest way to
+   * see on a serial monitor that the microphone hears anything at all.
+   */
   attack: number;
   /**
    * Strength of the strongest periodicity between 60 and 600 Hz, 0..1.
@@ -23,6 +31,30 @@ export interface Features {
   flatness: number;
   /** Entropy of the band distribution, 0..1. ~1 when energy is everywhere. */
   spread: number;
+  /**
+   * Peak-to-RMS of the waveform, 0..1. A shot or a bang is a spike sitting on
+   * near-silence and reads high; an engine or rain reads low. Cheap, and it
+   * catches impulsiveness that the spectrum alone cannot see.
+   */
+  crest: number;
+  /**
+   * Centre of gravity of the spectrum as a band index, 0..1. Rumble is ~0.1,
+   * a bird whistle ~0.9. The single most useful number for "high or low".
+   */
+  centroid: number;
+  /**
+   * How far the loudest spectral peak stands above the average bin, 0..1.
+   * A whistle or an engine harmonic reads high, rain reads low. Flatness says
+   * the same thing about the whole spectrum; this one survives a peak that is
+   * narrow — a cricket in a noisy forest.
+   */
+  tonal: number;
+  /**
+   * How much the shape of the spectrum changed since the previous frame, 0..1.
+   * Near zero while an engine runs, high while a bird sings. Averaged over a
+   * window it becomes the "steadiness" that tells a chainsaw from a chirp.
+   */
+  flux: number;
   /** Energy in 16 log-spaced bands from 60 Hz to 8 kHz, normalised to sum 1. */
   bands: number[];
 }
@@ -67,6 +99,8 @@ export class FeatureExtractor {
   /** Recent frame levels in dBFS, newest last. Drives `attack`. */
   private readonly history: number[] = [];
   private static readonly HISTORY = 8;
+  /** The previous frame's band profile. Drives `flux`. */
+  private previousBands: number[] | null = null;
 
   constructor(sampleRate: number) {
     this.sampleRate = sampleRate;
@@ -74,6 +108,7 @@ export class FeatureExtractor {
 
   reset(): void {
     this.history.length = 0;
+    this.previousBands = null;
   }
 
   /** `samples` should be roughly 1024 long (64 ms at 16 kHz). */
@@ -86,6 +121,11 @@ export class FeatureExtractor {
     const bands = bandEnergies(this.spectrum, this.sampleRate);
     const flatness = spectralFlatness(this.spectrum);
     const spread = bandSpread(bands);
+    const centroid = bandCentroid(bands);
+    const tonal = peakProminence(this.spectrum);
+    const crest = crestFactor(samples);
+    const flux = bandFlux(this.previousBands, bands);
+    this.previousBands = bands;
 
     // Attack: how far this frame rose above the quietest of the recent ones.
     // 24 dB of rise inside half a second is a hard transient.
@@ -102,7 +142,7 @@ export class FeatureExtractor {
       if (this.history.length > FeatureExtractor.HISTORY) this.history.shift();
     }
 
-    return { rms, zcr, attack, harmonic, flatness, spread, bands };
+    return { rms, zcr, attack, harmonic, flatness, spread, crest, centroid, tonal, flux, bands };
   }
 }
 
@@ -128,21 +168,27 @@ function zcrOf(samples: Float32Array): number {
 }
 
 /**
- * How strongly the frame repeats itself at a pitch between 60 and 600 Hz —
- * normalised autocorrelation over the matching lags.
+ * How strongly the frame repeats itself at a pitch between 60 and 600 Hz.
  *
- * The first version of this measured amplitude modulation of the rectified
- * envelope, which turned out to track the *carrier* rather than the modulation:
- * a steady 70 Hz engine tone rectifies to a 140 Hz ripple and scored higher
- * than an actual chainsaw. Periodicity of the raw signal is the honest
- * measurement, and it does the job the classifier actually needs — telling
- * pitched sources apart from noise like a gunshot.
+ * Two details matter more than the autocorrelation itself, and both were
+ * learned from the corpus rather than guessed:
+ *
+ *   1. The lag has to be a *local peak*. Autocorrelation of any smooth signal
+ *      decays from lag 1 — take the plain maximum and a gust of wind, which is
+ *      just low-passed noise, scores as "pitched" as an engine. Wind at 0.53
+ *      against an engine at 0.60 is not a measurement, it is a coin toss.
+ *   2. What counts is how far that peak stands above the average correlation,
+ *      not its height. A periodic signal comes back to itself and leaves
+ *      again; noise correlates with itself a bit at every lag.
+ *
+ * After this, an engine keeps its score and wind loses two thirds of it —
+ * which is exactly the difference between a patrol at 3 a.m. and a quiet night.
  */
 function harmonicity(samples: Float32Array, sampleRate: number): number {
   const n = samples.length;
   const minLag = Math.max(2, Math.floor(sampleRate / 600));
   const maxLag = Math.min(n >> 1, Math.floor(sampleRate / 60));
-  if (maxLag <= minLag) return 0;
+  if (maxLag <= minLag + 2) return 0;
 
   let mean = 0;
   for (let i = 0; i < n; i += 1) mean += samples[i];
@@ -156,19 +202,101 @@ function harmonicity(samples: Float32Array, sampleRate: number): number {
   }
   if (energy <= 1e-9) return 0;
 
-  let best = 0;
-  for (let lag = minLag; lag <= maxLag; lag += 1) {
+  const correlation = new Float32Array(maxLag + 2);
+  for (let lag = minLag - 1; lag <= maxLag + 1 && lag < correlation.length; lag += 1) {
     let acc = 0;
     let norm = 0;
     for (let i = 0; i + lag < n; i += 1) {
       acc += x[i] * x[i + lag];
       norm += x[i] * x[i];
     }
-    if (norm <= 1e-9) continue;
-    const r = acc / norm;
-    if (r > best) best = r;
+    correlation[lag] = norm > 1e-9 ? acc / norm : 0;
   }
-  return clamp01(best);
+
+  let peak = 0;
+  let average = 0;
+  let count = 0;
+  for (let lag = minLag; lag <= maxLag; lag += 1) {
+    const r = correlation[lag];
+    average += Math.abs(r);
+    count += 1;
+    if (r > peak && r >= correlation[lag - 1] && r >= correlation[lag + 1]) peak = r;
+  }
+  if (count === 0) return 0;
+  average /= count;
+
+  return clamp01((peak - average) / Math.max(0.15, 1 - average));
+}
+
+/**
+ * Peak over RMS of the waveform, in dB, mapped to 0..1 over 6–24 dB.
+ * A sine reads 3 dB, white noise ~12 dB, a bang well past 20 — so this is the
+ * one number that says "a spike on quiet" without looking at the spectrum.
+ */
+function crestFactor(samples: Float32Array): number {
+  let peak = 0;
+  let sum = 0;
+  for (let i = 0; i < samples.length; i += 1) {
+    const v = Math.abs(samples[i]);
+    if (v > peak) peak = v;
+    sum += samples[i] * samples[i];
+  }
+  const rms = Math.sqrt(sum / Math.max(1, samples.length));
+  if (rms <= 1e-7 || peak <= 1e-7) return 0;
+  return clamp01((20 * Math.log10(peak / rms) - 6) / 18);
+}
+
+/**
+ * Centre of gravity of the band profile, as a position along the 16 bands.
+ * The bands are log-spaced, so this is the centroid in log-frequency — which
+ * is how hearing works, and it keeps a bird at ~0.9 whether it sings at 3 or
+ * 6 kHz.
+ */
+function bandCentroid(bands: number[]): number {
+  let weighted = 0;
+  let total = 0;
+  for (let i = 0; i < bands.length; i += 1) {
+    weighted += i * bands[i];
+    total += bands[i];
+  }
+  if (total <= 1e-9) return 0;
+  return clamp01(weighted / total / (bands.length - 1));
+}
+
+/**
+ * How far the loudest bin stands above the average one, 0..1 over 0–60 dB.
+ * Flatness averages the whole spectrum and a single narrow peak barely moves
+ * it; a cricket is exactly a single narrow peak.
+ *
+ * Sixty decibels, not thirty: on real recordings thirty put every class at the
+ * top of the scale, and a feature that reads 0.9 for everything decides
+ * nothing.
+ */
+function peakProminence(spectrum: Float32Array): number {
+  let peak = 0;
+  let sum = 0;
+  let count = 0;
+  for (let i = 2; i < spectrum.length; i += 1) {
+    const v = spectrum[i];
+    if (v > peak) peak = v;
+    sum += v;
+    count += 1;
+  }
+  if (count === 0 || sum <= 1e-9 || peak <= 1e-9) return 0;
+  return clamp01((20 * Math.log10(peak / (sum / count))) / 60);
+}
+
+/**
+ * How much the *shape* of the spectrum moved since the previous frame: half
+ * the sum of absolute differences, which for two profiles that each sum to 1
+ * lands in 0..1. Level is deliberately not in it — a car driving closer is
+ * still the same sound, while a bird between two notes is not.
+ */
+function bandFlux(previous: number[] | null, bands: number[]): number {
+  if (!previous) return 0;
+  let sum = 0;
+  for (let i = 0; i < bands.length; i += 1) sum += Math.abs(bands[i] - previous[i]);
+  return clamp01(sum / 2);
 }
 
 /** Shannon entropy of the band distribution, normalised to 0..1. */
@@ -247,6 +375,9 @@ export function parseFeatures(raw: unknown): Features | null {
     return Number.isFinite(n) ? n : fallback;
   };
 
+  // Older firmware sends six numbers, not ten. Rather than refuse the frame,
+  // derive what can be derived from the bands and leave the rest neutral — an
+  // old board keeps working, a shade less sure of itself.
   return {
     rms: Math.max(SILENCE_DB, Math.min(0, num(o.rms, SILENCE_DB))),
     zcr: clamp01(num(o.zcr, 0)),
@@ -254,6 +385,10 @@ export function parseFeatures(raw: unknown): Features | null {
     harmonic: clamp01(num(o.harmonic ?? o.harm, 0)),
     flatness: clamp01(num(o.flatness ?? o.flat, 0.5)),
     spread: clamp01(num(o.spread, bandSpread(normalised))),
+    crest: clamp01(num(o.crest, 0.3)),
+    centroid: clamp01(num(o.centroid ?? o.cen, bandCentroid(normalised))),
+    tonal: clamp01(num(o.tonal, 0.3)),
+    flux: clamp01(num(o.flux, 0.2)),
     bands: normalised,
   };
 }

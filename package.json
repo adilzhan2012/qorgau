@@ -3,12 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --port 3100",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "audio": "node scripts/gen-audio.mjs",
-    "deploy": "node scripts/deploy.mjs"
+    "audio": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/gen-audio.mjs",
+    "corpus": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/fetch-corpus.mjs",
+    "eval": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/evaluate.mjs",
+    "selftest": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/evaluate.mjs --selftest",
+    "deploy": "node scripts/deploy.mjs",
+    "fw-check": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/compare-firmware.mjs"
   },
   "dependencies": {
     "maplibre-gl": "^6.9.0",

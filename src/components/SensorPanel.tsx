@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { Board, BoardsResult } from "@/hooks/useBoards";
+import { CameraPanel } from "@/components/CameraPanel";
 import type { PublishFeatures } from "@/hooks/useReadings";
 import { bandLabel } from "@/lib/audio/features";
 import { playSample, startMicrophone, type SourceHandle } from "@/lib/audio/sources";
@@ -16,6 +17,12 @@ import {
   topSoundClass,
   type Device,
 } from "@/lib/types";
+
+/**
+ * Ниже этого уровня звука нет вообще — это цифровой ноль, а не тихая комната:
+ * у любого живого микрофона есть собственный шум около −60 дБ.
+ */
+const SILENT_INPUT_DB = -95;
 
 /** One entry of public/audio/samples.json, written by scripts/gen-audio.mjs. */
 interface SampleFile {
@@ -37,6 +44,8 @@ interface SensorPanelProps {
   target: Device | null;
   /** Where every frame of features goes. */
   publish: PublishFeatures;
+  /** Камера подтвердила человека — в журнал тревог. */
+  onCameraPerson: (score: number) => void;
   onSelectDevice: (id: string) => void;
   /** Tells the parent whether the microphone is on, for the header pill. */
   onMicChange: (on: boolean) => void;
@@ -106,6 +115,18 @@ function BoardRow({
                       ? "кадры не идут"
                       : `${board.frames} кадров${board.battery !== null ? ` · ${board.battery}%` : ""}${gpsNote(board)}`}
             </span>
+            {/*
+              Плата проверяет микрофон при старте и говорит прямым текстом,
+              что с ним не так. Раньше это сообщение видел только тот, кто
+              держал открытым Монитор порта, — а он, чтобы подключиться к
+              сайту, должен быть закрыт. Замкнутый круг: плата жалуется в
+              пустоту, а на сайте просто идут бессмысленные вердикты.
+            */}
+            {board.mic !== null && !board.mic.startsWith("ok") && (
+              <span className="mt-0.5 block text-[11px] leading-snug text-alarm">
+                микрофон: {board.mic}
+              </span>
+            )}
           </span>
         </button>
 
@@ -180,6 +201,7 @@ export function SensorPanel({
   onSensorDeviceChange,
   target,
   publish,
+  onCameraPerson,
   onSelectDevice,
   onMicChange,
 }: SensorPanelProps) {
@@ -474,6 +496,21 @@ export function SensorPanel({
                 Уровень {live.rms.toFixed(0)} дБ · 60 Гц … 8 кГц
               </p>
             )}
+
+            {/*
+              Уровень на самом дне шкалы — это не тихая комната, а полное
+              отсутствие звука: у любого живого микрофона есть собственный шум.
+              Значит, источник выбран не тот, выключен или отдаёт нули. Молча
+              показывать «Тишина 99%» в этом случае — врать: плата в такой
+              ситуации пишет в порт, что микрофон молчит, сайт теперь тоже.
+            */}
+            {live && live.rms <= SILENT_INPUT_DB && (
+              <p className="mt-2 rounded-lg bg-alarm-soft px-3 py-2 text-[12px] leading-relaxed text-alarm">
+                Звук не приходит: уровень на нуле. Проверьте, что выбран нужный микрофон и он не
+                выключен в системе, дайте сайту доступ к микрофону и попробуйте ещё раз. С платой —
+                что она шлёт кадры и что Монитор порта закрыт.
+              </p>
+            )}
           </div>
 
           {/* All six classes */}
@@ -530,6 +567,9 @@ export function SensorPanel({
               </div>
             )}
           </div>
+
+          {/* Камера: второй, независимый ответ на вопрос «есть ли человек». */}
+          <CameraPanel onPerson={onCameraPerson} />
         </div>
       )}
     </div>
