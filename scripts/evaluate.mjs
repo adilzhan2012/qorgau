@@ -29,7 +29,7 @@ register("./lib/ts-hooks.mjs", import.meta.url);
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const AUDIO_DIR = path.join(ROOT, "public", "audio");
 
-const { FeatureExtractor } = await import("@/lib/audio/features");
+const { FeatureExtractor, parseFeatures } = await import("@/lib/audio/features");
 const { ListeningWindow } = await import("@/lib/audio/window");
 const { classify, inspect } = await import("@/lib/audio/classify");
 const { TEST_CASES, TEST_FRAME, TEST_RATE } = await import("@/lib/audio/testSignals");
@@ -38,6 +38,7 @@ const { SOUND_CLASS_LABELS, SOUND_SAFETY } = await import("@/lib/types");
 
 const RATE = 16000;
 const FRAME = 1024;
+const FRAME_MS = (FRAME / RATE) * 1000;
 
 // ─────────────────────────── что проверяем ───────────────────────────
 
@@ -73,14 +74,41 @@ function classOf(file) {
     ?? null;
 }
 
+/** Класс записи с датчика — из самого файла. */
+function recordingLabel(file) {
+  try {
+    return readRecording(file).label;
+  } catch {
+    return null;
+  }
+}
+
 function collect(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
     const full = path.join(dir, entry);
     if (statSync(full).isDirectory()) out.push(...collect(full));
     else if (path.extname(entry).toLowerCase() === ".wav") out.push(full);
+    else if (entry.endsWith(".qorgau.json")) out.push(full);
   }
   return out;
+}
+
+/**
+ * Записи с самого датчика — файлы .qorgau.json, которые сохраняет кнопка
+ * «Записать образец» на сайте. Внутри не звук, а готовые признаки кадров:
+ * классификатор видит ровно их, поэтому для настройки порогов этого хватает,
+ * а весит такой файл сотню килобайт вместо мегабайтов.
+ *
+ * Правильный ответ лежит в самом файле, в поле `label` — его выбрал человек,
+ * когда нажимал запись. Помехи к таким записям не применяются: портить
+ * готовые признаки нечем, да и незачем — они и так сняты в реальных условиях.
+ */
+function readRecording(file) {
+  const raw = JSON.parse(readFileSync(file, "utf8"));
+  const frames = Array.isArray(raw.frames) ? raw.frames.map(parseFeatures).filter(Boolean) : [];
+  if (frames.length === 0) throw new Error("в записи нет ни одного разобранного кадра");
+  return { label: raw.label ?? null, source: raw.source ?? "esp32", frames };
 }
 
 // ─────────────────────────── помехи ───────────────────────────
@@ -149,16 +177,28 @@ const STRESS = [
 /** Прогоняет звук через настоящий конвейер сайта и возвращает, что он услышал. */
 function listen(samples) {
   const extractor = new FeatureExtractor(RATE);
+  return listenFrames(
+    (function* () {
+      for (let at = 0; at + FRAME <= samples.length; at += FRAME) {
+        yield extractor.extract(samples.subarray(at, at + FRAME));
+      }
+    })(),
+  );
+}
+
+/** Тот же прогон, но кадры уже готовы — из записи .qorgau.json. */
+function listenFrames(incoming) {
   const listening = new ListeningWindow();
   const windows = [];
   const frames = {};
   const alerts = new Map(); // класс → лучшая уверенность тревоги
   let previous;
   let peak = -100;
+  let index = 0;
 
-  for (let at = 0; at + FRAME <= samples.length; at += FRAME) {
-    const features = extractor.extract(samples.subarray(at, at + FRAME));
-    const time = (at / RATE) * 1000;
+  for (const features of incoming) {
+    const time = index * FRAME_MS;
+    index += 1;
     const window = listening.push(features);
     const reading = mergeReading(
       previous,
@@ -264,7 +304,11 @@ if (selftestOnly) {
 
 const files = [...collect(AUDIO_DIR), ...extraDirs.flatMap((d) => collect(path.resolve(d)))];
 const cases = files
-  .map((file) => ({ file, expected: classOf(file) }))
+  .map((file) => ({
+    file,
+    // У записи с датчика правильный ответ лежит внутри файла; у wav — в имени.
+    expected: file.endsWith(".qorgau.json") ? recordingLabel(file) : classOf(file),
+  }))
   .filter((c) => c.expected !== null)
   .filter((c) => !only || c.file.includes(only))
   .sort((a, b) => a.expected.localeCompare(b.expected) || a.file.localeCompare(b.file));
@@ -275,6 +319,11 @@ if (cases.length === 0) {
 }
 
 const variants = withStress ? STRESS : STRESS.slice(0, 1);
+
+/** decodeWav отдаёт объект, resample хочет три аргумента. */
+function withRate(wav) {
+  return [wav.samples, wav.rate, RATE];
+}
 const DUMP_FIELDS = ["rms", "peak", "floor", "levelSpan", "duty", "onsets", "steady",
   "bandPeak", "zcr", "harmonic", "flatness", "spread", "centroid",
   "tonal", "attack", "crest"];
@@ -287,12 +336,17 @@ let checks = 0;
 console.log(`\nQorgau — проверка распознавания: ${cases.length} звук(ов) × ${variants.length} условие(й)\n`);
 
 for (const { file, expected } of cases) {
-  const wav = decodeWav(readFileSync(file));
-  const audio = resample(wav.samples, wav.rate, RATE);
-  console.log(`${path.relative(ROOT, file)}  →  ожидаем «${SOUND_CLASS_LABELS[expected]}»`);
+  const recorded = file.endsWith(".qorgau.json");
+  const audio = recorded ? null : resample(...withRate(decodeWav(readFileSync(file))));
+  const frames = recorded ? readRecording(file).frames : null;
+  console.log(
+    `${path.relative(ROOT, file)}  →  ожидаем «${SOUND_CLASS_LABELS[expected]}»` +
+      (recorded ? "  (запись с датчика)" : ""),
+  );
 
-  for (const [index, variant] of variants.entries()) {
-    const heard = listen(variant.apply(audio, index));
+  // Помехи применимы только к звуку: у записи признаки уже посчитаны.
+  for (const [index, variant] of (recorded ? STRESS.slice(0, 1) : variants).entries()) {
+    const heard = recorded ? listenFrames(frames) : listen(variant.apply(audio, index));
     const verdict = judge(expected, heard);
     checks += 1;
     if (verdict.ok) passed += 1;

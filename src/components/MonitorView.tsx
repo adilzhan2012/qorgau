@@ -55,7 +55,8 @@ export function MonitorView() {
   // memory, the classifier in the bundle. The site is static files, so it
   // opens from a URL with nothing installed — and nothing is faked to get there.
   const store = useDeviceStore();
-  const { readings, summaries, events, publish, forget } = useReadings();
+  const { readings, summaries, events, publish, forget, recording, startRecording, cancelRecording } =
+    useReadings();
   const devices = useDevices(store.records, readings, summaries);
   const now = useNow();
   const mapRef = useRef<MapRef | null>(null);
@@ -389,6 +390,9 @@ export function MonitorView() {
               onSensorDeviceChange={setSensorDeviceId}
               target={sensorTarget}
               publish={publish}
+              recording={recording}
+              onStartRecording={startRecording}
+              onCancelRecording={cancelRecording}
               onSelectDevice={selectById}
               onMicChange={setMicOn}
             />

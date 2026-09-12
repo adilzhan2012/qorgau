@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { Board, BoardsResult } from "@/hooks/useBoards";
-import type { PublishFeatures } from "@/hooks/useReadings";
+import type { PublishFeatures, RecordingState } from "@/hooks/useReadings";
 import { bandLabel } from "@/lib/audio/features";
 import { playSample, startMicrophone, type SourceHandle } from "@/lib/audio/sources";
 import { withBasePath } from "@/lib/basePath";
+import { RECORDING_SECONDS } from "@/lib/live/recording";
 import { plural } from "@/lib/time";
 import {
   SAFETY_LABELS,
@@ -15,6 +16,7 @@ import {
   SOUND_SAFETY,
   topSoundClass,
   type Device,
+  type SoundClass,
 } from "@/lib/types";
 
 /**
@@ -43,6 +45,10 @@ interface SensorPanelProps {
   target: Device | null;
   /** Where every frame of features goes. */
   publish: PublishFeatures;
+  /** Запись образца, если идёт. */
+  recording: RecordingState | null;
+  onStartRecording: (label: SoundClass, deviceId: string) => void;
+  onCancelRecording: () => void;
   onSelectDevice: (id: string) => void;
   /** Tells the parent whether the microphone is on, for the header pill. */
   onMicChange: (on: boolean) => void;
@@ -198,10 +204,16 @@ export function SensorPanel({
   onSensorDeviceChange,
   target,
   publish,
+  recording,
+  onStartRecording,
+  onCancelRecording,
   onSelectDevice,
   onMicChange,
 }: SensorPanelProps) {
   const [micOn, setMicOn] = useState(false);
+  // Класс по умолчанию — бензопила: ради неё всё и затевалось, и записывать
+  // её будут чаще всего.
+  const [recordLabel, setRecordLabel] = useState<SoundClass>("chainsaw");
   const [open, setOpen] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [samples, setSamples] = useState<SampleFile[]>([]);
@@ -561,6 +573,72 @@ export function SensorPanel({
                   </button>
                 ))}
               </div>
+            )}
+          </div>
+
+          {/* ── Запись образцов ─────────────────────────────────────────
+              Пороги классификатора измерены на чужом корпусе записей. Это
+              лучше, чем на слух, но микрофон в парке — не тот, которым
+              записывали корпус. Здесь можно записать три секунды с этого
+              датчика, сказать, что это было, и получить файл: по таким файлам
+              пороги настраиваются под ваше железо и вашу местность. */}
+          <div className="mt-4 border-t border-white/[0.06] pt-3">
+            <p className="stat-label mb-1.5">Записать образец</p>
+
+            {recording !== null ? (
+              <div className="rounded-xl bg-raised p-3">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-[13px] font-medium">
+                    Пишу «{SOUND_CLASS_LABELS[recording.label]}»…
+                  </span>
+                  <button
+                    type="button"
+                    onClick={onCancelRecording}
+                    className="text-[12px] text-muted hover:text-ink"
+                  >
+                    Отмена
+                  </button>
+                </div>
+                <span className="mt-2 block h-1.5 overflow-hidden rounded-full bg-white/10">
+                  <span
+                    style={{ width: `${Math.round(recording.progress * 100)}%` }}
+                    className="block h-full rounded-full bg-accent transition-all duration-100"
+                  />
+                </span>
+                <p className="mt-1.5 text-[11px] tabular-nums text-faint">
+                  {recording.frames} кадров · файл сохранится сам
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="flex gap-1.5">
+                  <select
+                    value={recordLabel}
+                    onChange={(event) => setRecordLabel(event.target.value as SoundClass)}
+                    className={selectClass}
+                    aria-label="Что сейчас звучит"
+                  >
+                    {SOUND_CLASSES.map((name) => (
+                      <option key={name} value={name}>
+                        {SOUND_CLASS_LABELS[name]}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => target && onStartRecording(recordLabel, target.id)}
+                    disabled={!target || !live}
+                    className={`${buttonClass} shrink-0 bg-raised text-ink hover:bg-raised/70`}
+                  >
+                    Записать {RECORDING_SECONDS} с
+                  </button>
+                </div>
+                <p className="mt-1.5 text-[11px] leading-relaxed text-faint">
+                  {live
+                    ? "Включите звук у датчика, выберите, что это, и нажмите запись. Файл сохранится на диск — по таким файлам настраиваются пороги под ваш микрофон."
+                    : "Сначала подключите плату или включите микрофон: записывать нечего, пока звук не идёт."}
+                </p>
+              </>
             )}
           </div>
         </div>
