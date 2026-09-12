@@ -71,6 +71,7 @@ const ALERT_THRESHOLD = 45;
 const CONFIRM_FRAMES: Record<SoundClass, number> = {
   chainsaw: 8,
   vehicle: 8,
+  voice: 6,
   dog: 5,
   gunshot: 4,
   nature: 0,
@@ -88,6 +89,10 @@ const CONFIRM_FRAMES: Record<SoundClass, number> = {
 const EVIDENCE_SECONDS: Record<SoundClass, number> = {
   chainsaw: 1.0,
   vehicle: 1.0,
+  // Речь опознаётся по движению спектра, а движение видно только на нескольких
+  // слогах: за полсекунды человек успевает сказать один слог, и он ничем не
+  // отличается от крика птицы.
+  voice: 0.8,
   dog: 0.5,
   gunshot: 0.25,
   nature: 0,

@@ -56,6 +56,7 @@ const only = args.flatMap((a, i) => (a === "--only" ? [args[i + 1]] : [])).filte
 
 /** Класс по имени файла или папки — те же подсказки, что в gen-audio.mjs. */
 const HINTS = [
+  [/voice|speech|human|laugh|cough|sneez|cry|breath|snor|голос|речь|человек/i, "voice"],
   [/gun|shot|shoot|rifle|выстрел|ружь|стрель/i, "gunshot"],
   [/dog|bark|лай|собак|пёс|пес/i, "dog"],
   [/chain|saw|пила|бензо|пил/i, "chainsaw"],

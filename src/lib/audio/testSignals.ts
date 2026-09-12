@@ -120,6 +120,38 @@ export const TEST_CASES: TestCase[] = [
     },
   },
   {
+    expect: "voice",
+    name: "человек (речь)",
+    file: "voice-demo.wav",
+    build: (frames = 32) =>
+      render(frames, (t) => {
+        // Гласная: основной тон 130 Гц с формантами на 600, 1100 и 2500 Гц —
+        // так устроен голосовой тракт. Каждые четверть секунды форманты
+        // сдвигаются, а между слогами проходит короткая пауза: именно это
+        // движение спектра и отличает речь от всего остального.
+        const syllable = Math.floor(t / 0.28);
+        const dt = t - syllable * 0.28;
+        if (dt > 0.2) return floor();
+
+        // Слоги чередуются, как «па-ма-ла»: форманты гуляют от слога к слогу.
+        const shift = 1 + 0.25 * Math.sin(syllable * 1.7);
+        const f0 = 130 * (1 + 0.04 * Math.sin(2 * Math.PI * 4 * t));
+        const env = Math.min(1, dt / 0.03) * Math.min(1, (0.2 - dt) / 0.04);
+
+        let v = 0;
+        for (let h = 1; h <= 24; h += 1) {
+          const hz = f0 * h;
+          // Три форманты: чем ближе гармоника к формантной частоте, тем громче.
+          const gain =
+            Math.exp(-Math.pow((hz - 600 * shift) / 180, 2)) +
+            0.7 * Math.exp(-Math.pow((hz - 1100 * shift) / 250, 2)) +
+            0.4 * Math.exp(-Math.pow((hz - 2500 * shift) / 500, 2));
+          v += Math.sin(2 * Math.PI * hz * t) * gain;
+        }
+        return (v / 3 + noise() * 0.04) * env * 0.5 + floor();
+      }),
+  },
+  {
     expect: "chainsaw",
     name: "бензопила",
     file: "chainsaw-demo.wav",

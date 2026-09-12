@@ -54,5 +54,12 @@
     "title": "Машина (гул двигателя)",
     "expected": "vehicle",
     "expectedLabel": "Транспорт"
+  },
+  {
+    "file": "voice-demo.wav",
+    "name": "voice-demo",
+    "title": "Человек (речь)",
+    "expected": null,
+    "expectedLabel": null
   }
 ]

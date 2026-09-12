@@ -9,6 +9,7 @@ export type DeviceStatus = "alert" | "online" | "offline";
 export const SOUND_CLASSES = [
   "nature",
   "animal",
+  "voice",
   "dog",
   "vehicle",
   "chainsaw",
@@ -24,6 +25,7 @@ export type Classification = Record<SoundClass, number>;
 export const SOUND_CLASS_LABELS: Record<SoundClass, string> = {
   nature: "Природа",
   animal: "Птицы, звери",
+  voice: "Человек",
   dog: "Собака",
   vehicle: "Транспорт",
   chainsaw: "Бензопила",
@@ -35,6 +37,7 @@ export const SOUND_CLASS_LABELS: Record<SoundClass, string> = {
 export const SOUND_CLASS_HINTS: Record<SoundClass, string> = {
   nature: "листва, ветер, вода, дождь",
   animal: "птичье пение, крики зверей",
+  voice: "голос, речь, смех, кашель",
   dog: "лай — рядом человек",
   vehicle: "двигатель машины, мотоцикла",
   chainsaw: "бензопила, незаконная рубка",
@@ -52,6 +55,10 @@ export const SOUND_SAFETY: Record<SoundClass, Safety> = {
   nature: "safe",
   animal: "safe",
   other: "safe",
+  // Голос — это человек, а человека в заповедной зоне быть не должно. Прямее
+  // всех остальных признаков: лай, мотор и пила говорят о человеке косвенно,
+  // голос — напрямую.
+  voice: "danger",
   dog: "danger",
   vehicle: "danger",
   chainsaw: "danger",

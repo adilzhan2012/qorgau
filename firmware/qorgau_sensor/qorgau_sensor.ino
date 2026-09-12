@@ -857,9 +857,11 @@ static void windowSummarise() {
 // записей (npm run corpus, затем npm run eval). Правите порог — правьте в
 // обоих местах и перегоняйте проверку, иначе плата и сайт разойдутся.
 
-enum { CLS_NATURE, CLS_ANIMAL, CLS_DOG, CLS_VEHICLE, CLS_CHAINSAW, CLS_GUNSHOT, CLS_OTHER, CLS_COUNT };
-static const char *CLS_NAME[CLS_COUNT]  = {"nature", "animal", "dog", "vehicle", "chainsaw", "gunshot", "other"};
-static const bool  CLS_DANGER[CLS_COUNT] = {false, false, true, true, true, true, false};
+enum { CLS_NATURE, CLS_ANIMAL, CLS_VOICE, CLS_DOG, CLS_VEHICLE, CLS_CHAINSAW, CLS_GUNSHOT, CLS_OTHER, CLS_COUNT };
+static const char *CLS_NAME[CLS_COUNT]  = {"nature", "animal", "voice", "dog", "vehicle", "chainsaw", "gunshot", "other"};
+// Голос — самый прямой признак человека: лай, мотор и пила говорят о нём
+// косвенно, голос напрямую. Поэтому тоже «опасно».
+static const bool  CLS_DANGER[CLS_COUNT] = {false, false, true, true, true, true, true, false};
 
 static const float CLS_SILENCE_DB  = -58.0f;   // тише — это фон, а не событие
 static const float CLS_TEMPERATURE = 0.15f;    // softmax: меньше — решительнее
@@ -867,9 +869,9 @@ static const int   CLS_ALERT_PCT   = 45;       // уверенность, с к�
 static const uint32_t DANGER_HOLD_MS = 8000;   // выстрел длится 200 мс; красный держим дольше
 
 /** Сколько кадров подряд должны сказать одно и то же, чтобы это была тревога. */
-static const int CLS_CONFIRM[CLS_COUNT] = {0, 0, 5, 8, 8, 4, 0};
+static const int CLS_CONFIRM[CLS_COUNT] = {0, 0, 6, 5, 8, 8, 4, 0};
 /** И сколько секунд звука должно накопиться в окне, прежде чем класс считается. */
-static const float CLS_EVIDENCE[CLS_COUNT] = {0.0f, 0.0f, 0.5f, 1.0f, 1.0f, 0.25f, 0.0f};
+static const float CLS_EVIDENCE[CLS_COUNT] = {0.0f, 0.0f, 0.8f, 0.5f, 1.0f, 1.0f, 0.25f, 0.0f};
 
 /** Сумма полос [from, to) — доля энергии в этом диапазоне, 0..1. */
 static float bandSum(int from, int to) {
@@ -906,6 +908,8 @@ static void classifyWindow() {
   float deepLow = bandSum(0, 3);    //   60 –  150 Гц  гул двигателя
   float body    = bandSum(3, 11);   //  150 – 1700 Гц  корпус бензопилы
   float mid     = bandSum(6, 13);   //  380 – 3200 Гц  форманты лая
+  float speech  = bandSum(5, 12);   //  280 – 2400 Гц  форманты голоса
+  float veryHigh = bandSum(11, 16); //  1.7 –    8 кГц птицы и стрёкот
   float high    = bandSum(10, 16);  //  1.3 –    8 кГц птицы, стрёкот, шипение
 
   float score[CLS_COUNT];
@@ -940,6 +944,29 @@ static void classifyWindow() {
     };
     const float g[] = {rampf(win.centroid, 0.42f, 0.62f)};
     score[CLS_ANIMAL] = classScore(w, v, 6, g, 1);
+  }
+  {
+    // Человек: речь, смех, крик. Узнаётся не спектром, а его непрерывным
+    // движением — гласные, согласные, паузы между слогами идут четыре-восемь
+    // раз в секунду, и ни один механизм так не делает.
+    //
+    // От птиц отделяется тем, что голос живёт ниже: у речи выше 1.7 кГц лежит
+    // пятая часть энергии, у птичьего пения половина, у стрёкота почти всё.
+    const float w[] = {2.5f, 2.5f, 2.0f, 2.0f, 1.5f};
+    const float v[] = {
+      rampf(win.harmonic, 0.25f, 0.6f),
+      gaussf(win.duty, 0.72f, 0.3f),
+      gaussf(win.centroid, 0.55f, 0.15f),
+      1.0f - rampf(win.crest, 0.25f, 0.55f),
+      1.0f - rampf(win.bandPeak, 0.3f, 0.55f),
+    };
+    const float g[] = {
+      rampf(speech, 0.42f, 0.62f),
+      1.0f - rampf(veryHigh, 0.22f, 0.4f),
+      1.0f - rampf(win.steady, 0.45f, 0.75f),
+      1.0f - rampf(win.levelSpan, 0.65f, 0.95f),
+    };
+    score[CLS_VOICE] = classScore(w, v, 5, g, 4);
   }
   {
     // Лай: отдельные выкрики с паузами, каждый много громче фона и голосом,
