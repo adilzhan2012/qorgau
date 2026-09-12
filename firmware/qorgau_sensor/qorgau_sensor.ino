@@ -902,7 +902,6 @@ static float classScore(const float *w, const float *v, int n, const float *gate
 }
 
 static void classifyWindow() {
-  float loud   = rampf(win.rms, -45.0f, -12.0f);
   float deepLow = bandSum(0, 3);    //   60 –  150 Гц  гул двигателя
   float body    = bandSum(3, 11);   //  150 – 1700 Гц  корпус бензопилы
   float mid     = bandSum(6, 13);   //  380 – 3200 Гц  форманты лая
@@ -980,12 +979,14 @@ static void classifyWindow() {
     // Бензопила: непрерывный мотор, но выше по спектру, чем машина, и с
     // выраженной высотой тона — пила визжит. Высота тона и отделяет её от
     // ветра и дождя, которые тоже непрерывны и тоже шумят.
-    const float w[] = {2.5f, 2.0f, 2.0f, 2.0f, 1.5f};
+    // Признака «громко» здесь нет намеренно: громкость говорит, как далеко
+    // источник, а не что это за источник. Пила за двести метров тихая — и
+    // именно её датчик обязан поймать.
+    const float w[] = {2.5f, 2.0f, 2.0f, 1.5f};
     const float v[] = {
       rampf(body, 0.35f, 0.55f),
       gaussf(win.flatness, 0.5f, 0.18f),
       gaussf(win.centroid, 0.45f, 0.14f),
-      loud,
       1.0f - rampf(deepLow, 0.25f, 0.45f),
     };
     const float g[] = {
@@ -994,7 +995,7 @@ static void classifyWindow() {
       rampf(win.harmonic, 0.22f, 0.42f),
       rampf(win.steady, 0.3f, 0.6f),
     };
-    score[CLS_CHAINSAW] = classScore(w, v, 5, g, 4);
+    score[CLS_CHAINSAW] = classScore(w, v, 4, g, 4);
   }
   {
     // Выстрел: одиночный хлопок. Всё окно — тишина, в которой один-два кадра
@@ -1016,11 +1017,20 @@ static void classifyWindow() {
     score[CLS_GUNSHOT] = classScore(w, v, 5, g, 4);
   }
   {
-    // Фон: постоянный небольшой уровень, награда за тишину и требование,
-    // чтобы ничего не происходило.
-    const float w[] = {2.5f, 2.0f, 3.0f};
-    const float v[] = {1.0f - rampf(win.levelSpan, 0.35f, 0.75f), 0.42f, 1.0f - loud};
-    score[CLS_OTHER] = classScore(w, v, 3, NULL, 0);
+    // Фон: ничего заметного. Главное здесь — «ничего не выделяется НАД
+    // ФОНОМ», а не «тихо вообще»: тишина, посчитанная от абсолютного уровня,
+    // топила далёкий лай, хотя в ночном парке фон стоит около −60 дБ и такой
+    // лай как раз и есть событие. Абсолютная громкость осталась, но по шкале
+    // −60…−40 — она отвечает на вопрос «есть ли хоть что-то громче шума
+    // микрофона», а не «близко ли источник».
+    const float w[] = {3.0f, 2.0f, 3.0f, 2.0f};
+    const float v[] = {
+      1.0f - rampf(win.levelSpan, 0.3f, 0.7f),
+      1.0f - rampf(win.onsets, 0.1f, 0.5f),
+      1.0f - rampf(win.rms, -60.0f, -40.0f),
+      0.42f,
+    };
+    score[CLS_OTHER] = classScore(w, v, 4, NULL, 0);
   }
 
   // Тише порога — это фон парка. Так и говорим, а не гадаем.

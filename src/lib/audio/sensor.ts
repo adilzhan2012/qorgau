@@ -2,21 +2,21 @@ import { FeatureExtractor, type Features } from "./features";
 import type { ReadingSource } from "@/lib/types";
 
 /**
- * Turns any Web Audio node into a sensor: pulls frames, extracts the same
- * features the ESP32 sends, and hands them to `onFeatures`. The microphone and
- * the sample player both run through here, so all three sources are literally
- * the same pipeline.
+ * Превращает любой узел Web Audio в датчик: тянет кадры, считает те же
+ * признаки, что шлёт ESP32, и отдаёт их в `onFeatures`. Микрофон ноутбука и
+ * проигрывание файла идут через одно и то же место, поэтому дальше по цепочке
+ * их не отличить от платы.
  */
 
 /**
- * The firmware samples at 16 kHz, so the browser does too — the band edges in
- * features.ts only reach 8 kHz, and matching the rate keeps the FFT bins
- * identical on both sides.
+ * Прошивка пишет звук на 16 кГц, и признаки считаются на этой же частоте:
+ * полосы в features.ts кончаются на 8 кГц, и совпадение частоты делает
+ * одинаковыми сами корзины БПФ по обе стороны.
  */
 export const SENSOR_RATE = 16000;
 export const FRAME_SAMPLES = 1024;
 
-/** ~15 readings a second: fast enough to look live, light enough to be free. */
+/** ~15 показаний в секунду: выглядит живым и стоит дёшево. */
 const FRAME_MS = 64;
 
 export interface SensorHandle {
@@ -26,18 +26,25 @@ export interface SensorHandle {
 export interface SensorOptions {
   deviceId: string;
   source: ReadingSource;
-  /** Receives every frame. This is how readings reach the app. */
+  /** Получает каждый кадр. Так показания и попадают в приложение. */
   onFeatures: (features: Features) => void;
 }
 
 /**
- * One AudioContext for the whole page, locked to 16 kHz so the browser
- * resamples the microphone and the sample files onto the firmware's rate.
+ * Один AudioContext на всю страницу, на СОБСТВЕННОЙ частоте звуковой карты.
  *
- * Shared rather than created per playback: browsers cap how many contexts a
- * page may hold (Chrome allows about six), and a demo where every button press
- * opens another one goes silent after a handful of clicks — with no error, the
- * audio simply stops arriving.
+ * Раньше он создавался с `sampleRate: 16000`, чтобы браузер сам пересчитывал
+ * микрофон на частоту платы. Красиво и не работает: на части машин Chrome в
+ * ответ на контекст с чужой для устройства частотой отдаёт с микрофона нули.
+ * Значок захвата в адресной строке горит, кадры идут, а уровень стоит на
+ * −100 дБ — сайт «слушает» и не слышит ничего. Ни ошибки, ни исключения.
+ *
+ * Поэтому частоту больше не навязываем, а пересчитываем сами — в `runSensor`.
+ * Признаки от этого не меняются: они по-прежнему считаются на 16 кГц.
+ *
+ * Контекст общий, а не по одному на проигрывание: браузеры ограничивают их
+ * число (Chrome — примерно шестью), и демонстрация, где каждая кнопка открывает
+ * новый, замолкает после десятка нажатий — молча, без ошибки.
  */
 let sharedContext: AudioContext | null = null;
 
@@ -46,9 +53,9 @@ export async function getSensorContext(): Promise<AudioContext> {
     const Ctor: typeof AudioContext =
       globalThis.AudioContext ??
       (globalThis as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    sharedContext = new Ctor({ sampleRate: SENSOR_RATE });
+    sharedContext = new Ctor();
   }
-  // Autoplay policy starts it suspended until a user gesture resumes it.
+  // Политика автозапуска держит контекст остановленным до жеста пользователя.
   if (sharedContext.state === "suspended") await sharedContext.resume();
   return sharedContext;
 }
@@ -58,9 +65,15 @@ export function runSensor(
   node: AudioNode,
   options: SensorOptions,
 ): SensorHandle {
+  const rate = context.sampleRate;
+  // Сколько отсчётов исходной частоты укладывается в кадр 16 кГц: на 48 кГц
+  // это 3072 отсчёта на те же 64 мс.
+  const sourceSamples = Math.max(FRAME_SAMPLES, Math.round((FRAME_SAMPLES * rate) / SENSOR_RATE));
+
   const analyser = context.createAnalyser();
-  // 2048 at 16 kHz is a 128 ms window; we read the newest 1024 of it.
-  analyser.fftSize = 2048;
+  // Окно анализатора — степень двойки, не меньше кадра: берём из него самые
+  // свежие `sourceSamples` отсчётов.
+  analyser.fftSize = Math.min(32768, nextPowerOfTwo(sourceSamples * 2));
   analyser.smoothingTimeConstant = 0;
   node.connect(analyser);
 
@@ -73,8 +86,7 @@ export function runSensor(
   const tick = () => {
     if (stopped) return;
     analyser.getFloatTimeDomainData(window);
-    frame.set(window.subarray(window.length - FRAME_SAMPLES));
-
+    resampleInto(window.subarray(window.length - sourceSamples), frame);
     options.onFeatures(extractor.extract(frame));
   };
 
@@ -88,13 +100,38 @@ export function runSensor(
       try {
         node.disconnect(analyser);
       } catch {
-        // Already torn down.
+        // Уже разобрано.
       }
     },
   };
 }
 
-/** Named so the local `window` Float32Array above cannot shadow the global. */
+/**
+ * Пересчёт на 16 кГц усреднением: каждый отсчёт результата — среднее тех
+ * исходных, что в него попали.
+ *
+ * Не просто «брать каждый третий»: выбрасывание отсчётов заворачивает всё, что
+ * выше 8 кГц, обратно в слышимую полосу, и шипение с ключей превращается в
+ * призрачный тон посреди спектра. Усреднение — это заодно и фильтр.
+ */
+function resampleInto(source: Float32Array, target: Float32Array): void {
+  const step = source.length / target.length;
+  for (let i = 0; i < target.length; i += 1) {
+    const from = Math.floor(i * step);
+    const to = Math.min(source.length, Math.max(from + 1, Math.floor((i + 1) * step)));
+    let sum = 0;
+    for (let j = from; j < to; j += 1) sum += source[j];
+    target[i] = sum / (to - from);
+  }
+}
+
+function nextPowerOfTwo(value: number): number {
+  let size = 32;
+  while (size < value) size *= 2;
+  return size;
+}
+
+/** Названа так, чтобы локальный Float32Array `window` не заслонил глобальный. */
 function window_setInterval(fn: () => void, ms: number): number {
   return globalThis.setInterval(fn, ms) as unknown as number;
 }
